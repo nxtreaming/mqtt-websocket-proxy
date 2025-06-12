@@ -12,6 +12,7 @@ if(MSVC)
     # Disable specific warnings
     add_compile_options(
         /wd4100 # unreferenced formal parameter
+        /wd4189 # unreferenced local variable
         /wd4267 # conversion from 'size_t' to 'type', possible loss of data
         /wd4244 # conversion from 'type1' to 'type2', possible loss of data
         /wd4525 # 'class' : all user-defined conversion operators are inherited
@@ -225,14 +226,14 @@ target_compile_definitions(xiaozhi-mqtt-core PUBLIC
 )
 
 # Create main executable (just needs a main entry point)
-add_executable(xiaozhi-mqtt-gateway src/main.cpp)
+add_executable(mqtt-websocket-proxy src/main.cpp)
 
 # Link the core library to the executable
-target_link_libraries(xiaozhi-mqtt-gateway PRIVATE xiaozhi-mqtt-core)
+target_link_libraries(mqtt-websocket-proxy PRIVATE xiaozhi-mqtt-core)
 
 # Add compile definitions for Windows
 if(WIN32)
-    target_compile_definitions(xiaozhi-mqtt-gateway PRIVATE
+    target_compile_definitions(mqtt-websocket-proxy PRIVATE
         _WIN32_WINNT=0x0601
         WIN32_LEAN_AND_MEAN
         NOMINMAX
@@ -241,29 +242,29 @@ if(WIN32)
     
     # Only define XIAOZHI_CRYPTO_EXPORTS when building the crypto utils
     # This ensures proper symbol export/import
-    target_compile_definitions(xiaozhi-mqtt-gateway PRIVATE $<$<CONFIG:Debug>:XIAOZHI_CRYPTO_EXPORTS>)
-    target_compile_definitions(xiaozhi-mqtt-gateway PRIVATE $<$<CONFIG:Release>:XIAOZHI_CRYPTO_EXPORTS>)
+    target_compile_definitions(mqtt-websocket-proxy PRIVATE $<$<CONFIG:Debug>:XIAOZHI_CRYPTO_EXPORTS>)
+    target_compile_definitions(mqtt-websocket-proxy PRIVATE $<$<CONFIG:Release>:XIAOZHI_CRYPTO_EXPORTS>)
     
     # Add Windows SDK library paths
-    target_link_directories(xiaozhi-mqtt-gateway PRIVATE
+    target_link_directories(mqtt-websocket-proxy PRIVATE
         ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/um/x64
         ${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/ucrt/x64
     )
 endif()
 
 # Add include directories for crypto_utils
-target_include_directories(xiaozhi-mqtt-gateway PRIVATE
+target_include_directories(mqtt-websocket-proxy PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 # Add library search paths
-target_link_directories(xiaozhi-mqtt-gateway PRIVATE
+target_link_directories(mqtt-websocket-proxy PRIVATE
     ${CMAKE_BINARY_DIR}/third_party/libwebsockets/lib/$<CONFIG>
 )
 
 # Add compile definitions for Windows
 if(WIN32)
-    target_compile_definitions(xiaozhi-mqtt-gateway PRIVATE
+    target_compile_definitions(mqtt-websocket-proxy PRIVATE
         _WIN32_WINNT=0x0601
         WIN32_LEAN_AND_MEAN
         NOMINMAX
@@ -299,7 +300,7 @@ link_windows_libs(test_websocket_reconnection)
 # OpenSSL linking is now handled in the main target_link_libraries call
 
 # Include directories
-target_include_directories(xiaozhi-mqtt-gateway PRIVATE
+target_include_directories(mqtt-websocket-proxy PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/third_party
     ${LIBUV_INCLUDE_DIRS}
@@ -309,13 +310,13 @@ target_include_directories(xiaozhi-mqtt-gateway PRIVATE
 
 # Platform-specific link libraries (non-Windows)
 if(UNIX AND NOT APPLE)
-    target_link_libraries(xiaozhi-mqtt-gateway PRIVATE pthread dl)
+    target_link_libraries(mqtt-websocket-proxy PRIVATE pthread dl)
 elseif(APPLE)
-    target_link_libraries(xiaozhi-mqtt-gateway PRIVATE pthread)
+    target_link_libraries(mqtt-websocket-proxy PRIVATE pthread)
 endif()
 
 # Compile definitions
-target_compile_definitions(xiaozhi-mqtt-gateway PRIVATE
+target_compile_definitions(mqtt-websocket-proxy PRIVATE
     PROJECT_VERSION="${PROJECT_VERSION}"
     $<$<CONFIG:Debug>:DEBUG_BUILD>
     XIAOZHI_CRYPTO_EXPORTS
@@ -328,21 +329,21 @@ if(BUILD_TESTS)
 endif()
 
 # Install rules
-install(TARGETS xiaozhi-mqtt-gateway
+install(TARGETS mqtt-websocket-proxy
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
 )
 
 install(FILES config/gateway.json.example
-    DESTINATION etc/xiaozhi-mqtt-gateway
+    DESTINATION etc/mqtt-websocket-proxy
     RENAME gateway.json
 )
 
 # Package configuration
-set(CPACK_PACKAGE_NAME "xiaozhi-mqtt-gateway")
+set(CPACK_PACKAGE_NAME "mqtt-websocket-proxy")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "MQTT+UDP to WebSocket Gateway")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "MQTT+UDP to WebSocket Proxy")
 set(CPACK_PACKAGE_VENDOR "Xiaozhi")
 
 if(WIN32)
