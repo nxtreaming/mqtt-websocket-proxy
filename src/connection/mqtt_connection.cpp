@@ -17,10 +17,14 @@
 
 #include "connection/mqtt_connection.h"
 #include "connection/websocket_bridge.h"
-#include "utils/logger.h"
-#include "utils/crypto_utils.h"
 #include "common/error_codes.h"
 #include "common/constants.h"
+#include "utils/logger.h"
+#include "utils/mqtt_auth.h"
+#include "utils/crypto_utils.h"
+
+#include <random>
+#include <cstdio>
 
 #include <uv.h>
 #include <nlohmann/json.hpp>
@@ -36,7 +40,8 @@ MQTTConnection::MQTTConnection(ConnectionId connection_id, uv_tcp_t* tcp_handle,
     , authenticated_(false)
     , device_said_goodbye_(false)
     , closing_(false)
-    , config_(config) {
+    , config_(config)
+    , udp_info_() {
 
     tcp_handle_->data = this;
     read_buffer_.reserve(constants::TCP_BUFFER_SIZE);
@@ -295,12 +300,12 @@ void MQTTConnection::OnMQTTConnect(const MQTTConnectPacket& packet) {
 
     // Initialize MCP proxy (JavaScript version: this.initializeDeviceTools())
     if (mcp_proxy_) {
-        // Need to get configuration from gateway server, using default config for now
-        ServerConfig default_config; // TODO: Pass correct configuration from gateway server
-        default_config.mcp.enabled = true;
-        default_config.mcp.max_tools_count = 32;
+        // Use the configuration passed from the gateway server
+        ServerConfig mcp_config = config_;
+        mcp_config.mcp.enabled = true;
+        mcp_config.mcp.max_tools_count = 32;
 
-        mcp_proxy_->Initialize(default_config);
+        mcp_proxy_->Initialize(mcp_config);
         mcp_proxy_->InitializeDeviceTools();
     }
 
@@ -401,9 +406,45 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
         }
 
         // Set WebSocket bridge callbacks
-        websocket_bridge_->SetConnectedCallback([this](const std::string& server_url) {
+        websocket_bridge_->SetConnectedCallback([this, json](const std::string& server_url) {
             LOG_INFO("WebSocket bridge connected to: " + server_url);
-            // TODO: Send hello reply
+            
+            // Send hello message to WebSocket server (JavaScript version compatible)
+            nlohmann::json hello_msg;
+            hello_msg["type"] = "hello";
+            hello_msg["version"] = json.value("version", 3);
+            hello_msg["transport"] = "websocket";
+            
+            // Add audio parameters
+            if (json.contains("audio_params")) {
+                hello_msg["audio_params"] = json["audio_params"];
+            } else {
+                // Default audio parameters
+                nlohmann::json audio_params;
+                audio_params["sample_rate"] = constants::AUDIO_SAMPLE_RATE;
+                audio_params["channels"] = constants::AUDIO_CHANNELS;
+                audio_params["bits_per_sample"] = constants::AUDIO_BITS_PER_SAMPLE;
+                audio_params["codec"] = "opus";
+                audio_params["bitrate"] = constants::AUDIO_BITRATE;
+                audio_params["frame_size"] = constants::AUDIO_FRAME_SIZE;
+                hello_msg["audio_params"] = audio_params;
+            }
+            
+            // Add device features
+            if (json.contains("features")) {
+                hello_msg["features"] = json["features"];
+            } else {
+                // Default features
+                nlohmann::json features;
+                features["supports_mcp"] = true;
+                features["supports_audio"] = true;
+                features["supports_encryption"] = true;
+                features["supported_codecs"] = nlohmann::json::array({"opus"});
+                hello_msg["features"] = features;
+            }
+            
+            // Send hello message
+            websocket_bridge_->SendMessage(hello_msg.dump());
         });
 
         websocket_bridge_->SetDisconnectedCallback([this](const std::string& server_url, int reason) {
@@ -434,8 +475,116 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
             return;
         }
 
-        // TODO: Wait for connection completion and get hello reply
-        // TODO: Send UDP info reply
+        // Set message callback to handle hello reply
+        websocket_bridge_->SetMessageCallback([this](const std::string& message) {
+            try {
+                nlohmann::json json_msg = nlohmann::json::parse(message);
+                
+                if (json_msg.contains("type") && json_msg["type"] == "hello") {
+                    // This is the hello reply from the WebSocket server
+                    LOG_INFO("Received hello reply from WebSocket server");
+                    
+                    // Extract session ID
+                    std::string session_id;
+                    if (json_msg.contains("session_id")) {
+                        session_id = json_msg["session_id"];
+                    } else {
+                        // Generate a session ID if not provided
+                        // Use a simple UUID generation for compatibility
+                        std::random_device rd;
+                        std::mt19937 gen(rd());
+                        std::uniform_int_distribution<uint32_t> dis(0, 0xFFFFFFFF);
+                        
+                        char uuid_str[37];
+                        snprintf(uuid_str, sizeof(uuid_str),
+                                "%08x-%04x-%04x-%04x-%04x%08x",
+                                dis(gen),
+                                dis(gen) & 0xFFFF,
+                                ((dis(gen) & 0x0FFF) | 0x4000), // Version 4
+                                ((dis(gen) & 0x3FFF) | 0x8000), // Variant 1
+                                dis(gen) & 0xFFFF,
+                                dis(gen));
+                        
+                        session_id = uuid_str;
+                    }
+                    
+                    // Create UDP connection info
+                    UDPConnectionInfo udp_info;
+                    udp_info.remote_address = config_.udp.public_ip;
+                    udp_info.remote_port = config_.udp.port;
+                    udp_info.cookie = connection_id_;
+                    udp_info.local_sequence = 0;
+                    udp_info.remote_sequence = 0;
+                    
+                    // Generate encryption key and nonce
+                    udp_info.encryption_key = crypto::AudioCrypto::GenerateKey();
+                    
+                    // Generate nonce (16 random bytes)
+                    std::vector<uint8_t> nonce(16);
+                    std::random_device rd;
+                    std::mt19937 gen(rd());
+                    std::uniform_int_distribution<int> dis(0, 255);
+                    
+                    for (size_t i = 0; i < nonce.size(); ++i) {
+                        nonce[i] = static_cast<uint8_t>(dis(gen));
+                    }
+                    udp_info.nonce = nonce;
+                    udp_info.encryption_method = "aes-128-ctr";
+                    udp_info.session_id = session_id;
+                    
+                    // Store UDP info for this connection
+                    udp_info_ = udp_info;
+                    
+                    // Notify gateway server about the new UDP session
+                    if (udp_info_callback_) {
+                        udp_info_callback_(connection_id_, udp_info);
+                    }
+                    
+                    // Send UDP info to the client
+                    SendUDPInfo(udp_info);
+                    
+                    LOG_INFO("UDP session created: " + session_id + ", client: " + client_id_);
+                } else if (json_msg.contains("type") && json_msg["type"] == "mcp" && 
+                           mcp_proxy_ && json_msg.contains("payload") && 
+                           json_msg["payload"].contains("method") && 
+                           (json_msg["payload"]["method"] == "initialize" || 
+                            json_msg["payload"]["method"] == "notifications/initialized" || 
+                            json_msg["payload"]["method"] == "tools/list")) {
+                    // Handle MCP initialization messages
+                    mcp_proxy_->OnMcpMessageFromBridge(json_msg);
+                } else {
+                    // Forward other messages to MQTT client
+                    ForwardFromWebSocket(credentials_.reply_to_topic, message);
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("Failed to parse WebSocket message: " + std::string(e.what()));
+            }
+        });
+        
+        // Set binary message callback to handle audio data
+        websocket_bridge_->SetBinaryMessageCallback([this](const std::vector<uint8_t>& data) {
+            if (data.size() < 16) {
+                LOG_WARN("Received invalid binary message: too short");
+                return;
+            }
+            
+            // Parse binary message (JavaScript version compatible)
+            uint32_t timestamp = 0;
+            uint32_t opus_length = 0;
+            
+            if (data.size() >= 16) {
+                timestamp = (data[8] << 24) | (data[9] << 16) | (data[10] << 8) | data[11];
+                opus_length = (data[12] << 24) | (data[13] << 16) | (data[14] << 8) | data[15];
+                
+                if (data.size() >= 16 + opus_length) {
+                    // Extract opus data
+                    std::vector<uint8_t> opus_data(data.begin() + 16, data.begin() + 16 + opus_length);
+                    
+                    // Send via UDP
+                    SendUdpMessage(opus_data, timestamp);
+                }
+            }
+        });
 
     } catch (const std::exception& e) {
         LOG_ERROR("Error processing hello message: " + std::string(e.what()));
