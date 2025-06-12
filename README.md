@@ -1,4 +1,4 @@
-# xiaozhi-mqtt-gateway C++ Implementation
+# MQTT WebSocket Proxy C++ Implementation
 
 High-performance MQTT+UDP to WebSocket bridge service based on libuv + libwebsockets
 
@@ -19,8 +19,8 @@ High-performance MQTT+UDP to WebSocket bridge service based on libuv + libwebsoc
 ### 2. Clone Project
 
 ```bash
-git clone https://github.com/78/xiaozhi-mqtt-gateway
-cd xiaozhi-mqtt-gateway
+git clone https://github.com/nxtreaming/mqtt-websocket-proxy
+cd mqtt-websocket-proxy
 ```
 
 ### 3. Prepare Dependencies
@@ -79,14 +79,14 @@ vim config/gateway.json  # Linux/macOS
 notepad config/gateway.json  # Windows
 
 # Run program
-./bin/xiaozhi-mqtt-gateway  # Linux/macOS
-.\bin\Release\xiaozhi-mqtt-gateway.exe  # Windows
+./bin/mqtt-websocket-proxy  # Linux/macOS
+.\bin\Release\mqtt-websocket-proxy.exe  # Windows
 ```
 
 ## 📁 Project Structure
 
 ```
-xiaozhi-mqtt-gateway-cpp/
+mqtt-websocket-proxy/
 ├── CMakeLists.txt              # Main CMake configuration
 ├── src/                        # Source code
 │   ├── main.cpp               # Program entry point
@@ -108,6 +108,19 @@ xiaozhi-mqtt-gateway-cpp/
 │       ├── types.h            # Type definitions
 │       ├── constants.h        # Constant definitions
 │       └── error_codes.h      # Error code definitions
+├── tests/                     # Test suite
+│   ├── test_basic.cpp                # Basic functionality tests
+│   ├── test_mqtt_protocol.cpp        # MQTT protocol tests
+│   ├── test_mqtt_auth.cpp            # Authentication tests
+│   ├── test_mcp_proxy.cpp            # MCP proxy tests
+│   ├── test_js_compatibility.cpp     # JavaScript compatibility tests
+│   ├── test_config_hot_reload.cpp    # Configuration reload tests
+│   ├── test_tcp_server.cpp           # TCP server tests
+│   ├── test_udp_server.cpp           # UDP server tests
+│   ├── test_encryption.cpp           # Encryption tests
+│   ├── test_audio_packet_format.cpp  # Audio packet format tests
+│   ├── test_websocket_reconnection.cpp # WebSocket reconnection tests
+│   └── test_complete_gateway.cpp     # End-to-end gateway tests
 ├── third_party/              # Third-party libraries
 │   ├── libuv/                # libuv source code
 │   ├── libwebsockets/        # libwebsockets source code
@@ -191,6 +204,38 @@ cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
 | Concurrent Connections | 1,000 | 10,000+ |
 | CPU Usage | Higher | Lower |
 | Deployment Complexity | Simple | Medium |
+
+## 🧪 Testing
+
+The project includes a comprehensive test suite covering all major components:
+
+```bash
+# Build tests
+cmake .. -DBUILD_TESTS=ON
+make -j$(nproc)  # Linux/macOS
+cmake --build . --config Release  # Windows
+
+# Run individual tests
+./bin/test_basic  # Linux/macOS
+.\bin\Release\test_basic.exe  # Windows
+```
+
+### Test Suite Components
+
+| Test | Description |
+|------|-------------|
+| test_basic | Basic functionality and utility tests |
+| test_mqtt_protocol | MQTT protocol parsing and serialization |
+| test_mqtt_auth | MQTT authentication mechanisms |
+| test_mcp_proxy | MCP proxy functionality |
+| test_js_compatibility | JavaScript compatibility tests |
+| test_config_hot_reload | Configuration hot reload functionality |
+| test_tcp_server | TCP server implementation |
+| test_udp_server | UDP server implementation |
+| test_encryption | Encryption and decryption tests |
+| test_audio_packet_format | Audio packet format handling |
+| test_websocket_reconnection | WebSocket reconnection logic |
+| test_complete_gateway | End-to-end gateway functionality |
 
 ## 🐛 Troubleshooting
 
