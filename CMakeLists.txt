@@ -142,7 +142,6 @@ set(JSON_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/third_party/nlohmann)
 
 # Source files
 set(GATEWAY_SOURCES
-    src/main.cpp
     src/server/gateway_server.cpp
     src/server/mqtt_server.cpp
     src/server/udp_server.cpp
