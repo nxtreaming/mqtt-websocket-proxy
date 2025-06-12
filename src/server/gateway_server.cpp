@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <csignal>
+#include <mutex>
 
 namespace xiaozhi {
 
@@ -638,6 +639,7 @@ void GatewayServer::OnWebSocketMessageReceived(const std::string& message) {
                     std::string server_session_id = json_msg["session_id"];
                     if (!server_session_id.empty()) {
                         LOG_INFO("Received session ID from server: " + server_session_id);
+                        std::lock_guard<std::mutex> lock(websocket_session_mutex_);
                         active_websocket_session_id_ = server_session_id;
                     }
                 }
@@ -662,6 +664,7 @@ void GatewayServer::OnWebSocketMessageReceived(const std::string& message) {
             else if (msg_type == "session_update" && json_msg.contains("session_id")) {
                 std::string session_id = json_msg["session_id"];
                 LOG_INFO("Session update received: " + session_id);
+                std::lock_guard<std::mutex> lock(websocket_session_mutex_);
                 active_websocket_session_id_ = session_id;
             }
         }
@@ -697,8 +700,12 @@ void GatewayServer::OnWebSocketBinaryMessageReceived(const std::vector<uint8_t>&
 
     // Send audio data via UDP (JavaScript version: this.connection.sendUdpMessage(opus, timestamp))
     if (udp_server_) {
-        // Use the active WebSocket session ID
-        std::string session_id = active_websocket_session_id_;
+        // Use the active WebSocket session ID with mutex protection
+        std::string session_id;
+        {
+            std::lock_guard<std::mutex> lock(websocket_session_mutex_);
+            session_id = active_websocket_session_id_;
+        }
         
         if (session_id.empty()) {
             LOG_WARN("No active WebSocket session ID available, cannot forward audio data");
@@ -728,9 +735,13 @@ void GatewayServer::OnWebSocketConnected(const std::string& server_url) {
     // Generate a new session ID for this connection
     std::string new_session_id = "ws_" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
-    active_websocket_session_id_ = new_session_id;
     
-    LOG_INFO("Created new WebSocket session ID: " + active_websocket_session_id_);
+    {
+        std::lock_guard<std::mutex> lock(websocket_session_mutex_);
+        active_websocket_session_id_ = new_session_id;
+    }
+    
+    LOG_INFO("Created new WebSocket session ID: " + new_session_id);
 
     // Send initial hello message
     if (websocket_bridge_) {
@@ -747,13 +758,16 @@ void GatewayServer::OnWebSocketConnected(const std::string& server_url) {
 void GatewayServer::OnWebSocketDisconnected(const std::string& server_url, int reason) {
     LOG_WARN("WebSocket disconnected from: " + server_url + " (reason: " + std::to_string(reason) + ")");
 
-    // Log the session ID that is being closed
-    if (!active_websocket_session_id_.empty()) {
-        LOG_INFO("Closing WebSocket session: " + active_websocket_session_id_);
+    // Log the session ID that is being closed and clear it with mutex protection
+    std::string session_id;
+    {
+        std::lock_guard<std::mutex> lock(websocket_session_mutex_);
+        session_id = active_websocket_session_id_;
+        if (!session_id.empty()) {
+            LOG_INFO("Closing WebSocket session: " + session_id);
+            active_websocket_session_id_.clear();
+        }
     }
-    
-    // Clear the active session ID
-    active_websocket_session_id_.clear();
 
     if (reason == LWS_CLOSE_STATUS_NORMAL) {
         LOG_INFO("WebSocket disconnected normally (manual disconnect)");

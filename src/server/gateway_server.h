@@ -281,6 +281,9 @@ private:
     
     // Current active WebSocket session ID
     std::string active_websocket_session_id_;
+    
+    // Mutex for protecting access to active_websocket_session_id_
+    std::mutex websocket_session_mutex_;
 
     // Disable copy constructor and assignment
     GatewayServer(const GatewayServer&) = delete;
