@@ -1,0 +1,36 @@
+{
+  "mqtt": {
+    "host": "0.0.0.0",
+    "port": 1883,
+    "max_connections": 10000,
+    "max_payload_size": 8192
+  },
+  "udp": {
+    "host": "0.0.0.0",
+    "port": 8884,
+    "public_ip": "mqtt.xiaozhi.me"
+  },
+  "websocket": {
+    "development_servers": [
+      "wss://dev-chat.xiaozhi.me/ws"
+    ],
+    "production_servers": [
+      "wss://chat.xiaozhi.me/ws",
+      "wss://chat2.xiaozhi.me/ws"
+    ],
+    "development_mac_addresses": [
+      "aa:bb:cc:dd:ee:ff",
+      "11:22:33:44:55:66"
+    ]
+  },
+  "logging": {
+    "enabled": true,
+    "level": "info",
+    "file_path": "logs/gateway.log"
+  },
+  "mcp": {
+    "enabled": true,
+    "max_tools_count": 32
+  },
+  "debug": false
+}
