@@ -278,6 +278,9 @@ private:
 
     // Last statistics time
     int64_t last_stats_time_;
+    
+    // Current active WebSocket session ID
+    std::string active_websocket_session_id_;
 
     // Disable copy constructor and assignment
     GatewayServer(const GatewayServer&) = delete;

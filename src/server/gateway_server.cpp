@@ -157,8 +157,33 @@ int GatewayServer::Stop() {
     // Stop statistics timer
     StopStatsTimer();
     
-    // TODO: Stop MQTT server
-    // TODO: Stop UDP server
+    // Stop WebSocket bridge
+    if (websocket_bridge_) {
+        LOG_INFO("Stopping WebSocket bridge...");
+        websocket_bridge_->Disconnect();
+    }
+    
+    // Stop MQTT server
+    if (mqtt_server_) {
+        LOG_INFO("Stopping MQTT server...");
+        int ret = mqtt_server_->Stop();
+        if (ret != error::SUCCESS) {
+            LOG_WARN("Failed to stop MQTT server cleanly: " + error::GetErrorMessage(ret));
+        } else {
+            LOG_INFO("MQTT server stopped successfully");
+        }
+    }
+    
+    // Stop UDP server
+    if (udp_server_) {
+        LOG_INFO("Stopping UDP server...");
+        int ret = udp_server_->Stop();
+        if (ret != error::SUCCESS) {
+            LOG_WARN("Failed to stop UDP server cleanly: " + error::GetErrorMessage(ret));
+        } else {
+            LOG_INFO("UDP server stopped successfully");
+        }
+    }
     
     running_.store(false);
     stopping_.store(false);
@@ -595,25 +620,49 @@ void GatewayServer::OnWebSocketMessageReceived(const std::string& message) {
     LOG_DEBUG("WebSocket message received: " + message.substr(0, 100) +
               (message.length() > 100 ? "..." : ""));
 
-    // TODO: Parse WebSocket message and forward to appropriate MQTT client
-    // For now, just log and update statistics
+    // Update statistics
     stats_.websocket_messages_received++;
     stats_.bytes_received += message.length();
 
-    // Example: Parse JSON message and forward to MQTT clients
+    // Parse JSON message and process based on message type
     try {
         nlohmann::json json_msg = nlohmann::json::parse(message);
 
-        if (json_msg.contains("type") && json_msg["type"] == "mqtt_forward") {
-            std::string topic = json_msg.value("topic", "");
-            std::string payload = json_msg.value("payload", "");
-
-            if (!topic.empty()) {
-                // Broadcast to all MQTT clients
-                if (mqtt_server_) {
-                    mqtt_server_->BroadcastToClients(topic, payload);
-                    LOG_DEBUG("Forwarded WebSocket message to MQTT clients: " + topic);
+        if (json_msg.contains("type")) {
+            std::string msg_type = json_msg["type"];
+            
+            // Handle server hello reply which may contain session ID
+            if (msg_type == "hello" || msg_type == "server_hello") {
+                // If the server provides a session ID, use it
+                if (json_msg.contains("session_id")) {
+                    std::string server_session_id = json_msg["session_id"];
+                    if (!server_session_id.empty()) {
+                        LOG_INFO("Received session ID from server: " + server_session_id);
+                        active_websocket_session_id_ = server_session_id;
+                    }
                 }
+                
+                // Process other hello message fields if needed
+                LOG_INFO("Received hello from WebSocket server");
+            }
+            // Handle MQTT message forwarding
+            else if (msg_type == "mqtt_forward") {
+                std::string topic = json_msg.value("topic", "");
+                std::string payload = json_msg.value("payload", "");
+
+                if (!topic.empty()) {
+                    // Broadcast to all MQTT clients
+                    if (mqtt_server_) {
+                        mqtt_server_->BroadcastToClients(topic, payload);
+                        LOG_DEBUG("Forwarded WebSocket message to MQTT clients: " + topic);
+                    }
+                }
+            }
+            // Handle session management messages
+            else if (msg_type == "session_update" && json_msg.contains("session_id")) {
+                std::string session_id = json_msg["session_id"];
+                LOG_INFO("Session update received: " + session_id);
+                active_websocket_session_id_ = session_id;
             }
         }
     } catch (const std::exception& e) {
@@ -648,8 +697,13 @@ void GatewayServer::OnWebSocketBinaryMessageReceived(const std::vector<uint8_t>&
 
     // Send audio data via UDP (JavaScript version: this.connection.sendUdpMessage(opus, timestamp))
     if (udp_server_) {
-        // TODO: Need to determine target session ID, using default session here
-        std::string session_id = "default_session"; // Should actually get from connection context
+        // Use the active WebSocket session ID
+        std::string session_id = active_websocket_session_id_;
+        
+        if (session_id.empty()) {
+            LOG_WARN("No active WebSocket session ID available, cannot forward audio data");
+            return;
+        }
 
         ret = udp_server_->SendAudioData(session_id, opus_data);
         if (ret == error::SUCCESS) {
@@ -671,15 +725,35 @@ void GatewayServer::OnWebSocketBinaryMessageReceived(const std::vector<uint8_t>&
 void GatewayServer::OnWebSocketConnected(const std::string& server_url) {
     LOG_INFO("WebSocket connected to: " + server_url);
 
+    // Generate a new session ID for this connection
+    std::string new_session_id = "ws_" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
+    active_websocket_session_id_ = new_session_id;
+    
+    LOG_INFO("Created new WebSocket session ID: " + active_websocket_session_id_);
+
     // Send initial hello message
     if (websocket_bridge_) {
-        std::string hello_msg = R"({"type":"gateway_hello","gateway_id":"xiaozhi-mqtt-gateway","version":"1.0.0"})";
-        websocket_bridge_->SendMessage(hello_msg);
+        nlohmann::json hello_json;
+        hello_json["type"] = "gateway_hello";
+        hello_json["gateway_id"] = "mqtt-websocket-proxy";
+        hello_json["version"] = "1.0.0";
+        hello_json["session_id"] = active_websocket_session_id_;
+        
+        websocket_bridge_->SendMessage(hello_json.dump());
     }
 }
 
 void GatewayServer::OnWebSocketDisconnected(const std::string& server_url, int reason) {
     LOG_WARN("WebSocket disconnected from: " + server_url + " (reason: " + std::to_string(reason) + ")");
+
+    // Log the session ID that is being closed
+    if (!active_websocket_session_id_.empty()) {
+        LOG_INFO("Closing WebSocket session: " + active_websocket_session_id_);
+    }
+    
+    // Clear the active session ID
+    active_websocket_session_id_.clear();
 
     if (reason == LWS_CLOSE_STATUS_NORMAL) {
         LOG_INFO("WebSocket disconnected normally (manual disconnect)");
