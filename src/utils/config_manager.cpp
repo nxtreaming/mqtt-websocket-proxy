@@ -461,11 +461,82 @@ void ConfigManager::WatchFileWindows() {
 }
 #else
 void ConfigManager::WatchFileLinux() {
-    // Implementation for Linux would go here
-    // This is just a placeholder to prevent linker errors
-    while (!stop_watching_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    int inotify_fd = inotify_init1(IN_NONBLOCK);
+    if (inotify_fd == -1) {
+        LOG_ERROR("Failed to initialize inotify: " + std::string(strerror(errno)));
+        return;
     }
+
+    // Get the directory containing the config file
+    std::filesystem::path config_path(config_path_);
+    std::string dir_path = config_path.parent_path().string();
+    std::string file_name = config_path.filename().string();
+
+    // Add watch for the directory containing the config file
+    int watch_fd = inotify_add_watch(inotify_fd, dir_path.c_str(), 
+                                   IN_MODIFY | IN_MOVE_SELF | IN_DELETE_SELF);
+    if (watch_fd == -1) {
+        LOG_ERROR("Failed to add inotify watch on " + dir_path + ": " + strerror(errno));
+        close(inotify_fd);
+        return;
+    }
+
+    // Buffer for inotify events
+    constexpr size_t BUF_LEN = (10 * (sizeof(struct inotify_event) + NAME_MAX + 1));
+    char buffer[BUF_LEN];
+    
+    LOG_DEBUG("Watching for config file changes in: " + dir_path);
+
+    while (!stop_watching_.load()) {
+        fd_set fds;
+        struct timeval tv;
+        
+        FD_ZERO(&fds);
+        FD_SET(inotify_fd, &fds);
+        
+        // Set timeout to 1 second
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        int ret = select(inotify_fd + 1, &fds, NULL, NULL, &tv);
+        
+        if (ret == -1) {
+            if (errno == EINTR) continue; // Interrupted by signal
+            LOG_ERROR("select() failed: " + std::string(strerror(errno)));
+            break;
+        } else if (ret > 0 && FD_ISSET(inotify_fd, &fds)) {
+            ssize_t len = read(inotify_fd, buffer, BUF_LEN);
+            if (len == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    continue; // No data available
+                }
+                LOG_ERROR("read() from inotify fd failed: " + std::string(strerror(errno)));
+                break;
+            }
+            
+            // Process all inotify events
+            for (char* ptr = buffer; ptr < buffer + len; ) {
+                struct inotify_event* event = reinterpret_cast<struct inotify_event*>(ptr);
+                
+                // Check if the changed file is our config file
+                if (event->len > 0 && 
+                    (strcmp(event->name, file_name.c_str()) == 0 || 
+                     (event->mask & (IN_MOVE_SELF | IN_DELETE_SELF)))) {
+                    // Small delay to ensure the file is fully written
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    HandleConfigFileChange();
+                    break; // Only handle one event at a time
+                }
+                
+                ptr += sizeof(struct inotify_event) + event->len;
+            }
+        }
+        // else: timeout occurred, check stop_watching_ again
+    }
+    
+    // Cleanup
+    inotify_rm_watch(inotify_fd, watch_fd);
+    close(inotify_fd);
 }
 #endif
 
