@@ -293,10 +293,6 @@ void GatewayServer::OnConfigChanged(const ServerConfig& new_config) {
     LOG_INFO("Configuration change applied successfully");
 }
 
-void GatewayServer::SetupSignalHandlers() {
-    // Signal handlers will be set up in the main function
-    // This is just a placeholder for future implementation
-}
 
 uv_loop_t* GatewayServer::GetEventLoop() const {
     return event_loop_.get();
@@ -524,13 +520,6 @@ void GatewayServer::OnStatsTimer(uv_timer_t* timer) {
     }
 }
 
-void GatewayServer::OnSignal(uv_signal_t* signal, int signum) {
-    GatewayServer* server = static_cast<GatewayServer*>(signal->data);
-    if (server) {
-        LOG_INFO("Received signal " + std::to_string(signum) + ", stopping server...");
-        server->Stop();
-    }
-}
 
 void GatewayServer::PrintStats() {
     int64_t current_time = std::chrono::duration_cast<std::chrono::milliseconds>(

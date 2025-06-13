@@ -95,11 +95,6 @@ public:
     void OnConfigChanged(const ServerConfig& new_config);
 
     /**
-     * @brief Setup signal handlers
-     */
-    void SetupSignalHandlers();
-
-    /**
      * @brief Get libuv event loop
      * @return libuv event loop pointer
      */
@@ -157,13 +152,6 @@ private:
      * @param timer Timer handle
      */
     static void OnStatsTimer(uv_timer_t* timer);
-
-    /**
-     * @brief Signal handling callback
-     * @param signal Signal handle
-     * @param signum Signal number
-     */
-    static void OnSignal(uv_signal_t* signal, int signum);
 
     /**
      * @brief Print statistics information
