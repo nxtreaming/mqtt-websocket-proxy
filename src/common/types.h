@@ -89,17 +89,17 @@ struct UDPConnectionInfo {
     std::string remote_address;
     uint16_t remote_port = 0;
 
-    // JavaScript版本兼容字段: this.udp = { ... }
+    // Fields for JavaScript compatibility: mirrors JavaScript this.udp = { ... }
     uint32_t cookie = 0;                    // JavaScript: cookie
     uint32_t local_sequence = 0;           // JavaScript: localSequence
     uint32_t remote_sequence = 0;          // JavaScript: remoteSequence
 
-    // 加密信息 (JavaScript版本兼容)
+    // Encryption information (JavaScript compatibility)
     std::vector<uint8_t> encryption_key;   // JavaScript: key (crypto.randomBytes(16))
     std::vector<uint8_t> nonce;            // JavaScript: nonce (crypto.randomBytes(16))
     std::string encryption_method = "aes-128-ctr";  // JavaScript: encryption
 
-    // 会话信息
+    // Session information
     int64_t start_time = 0;
     SessionId session_id;
 };

@@ -30,7 +30,7 @@ bool test_websocket_connection(const std::string& server_url) {
     // Initialize WebSocketBridge with custom headers
     WebSocketBridge ws_bridge;
     ServerConfig config;
-    // 使用 websocket.development_servers 存储服务器 URL
+    // Use websocket.development_servers to store the server URL
     config.websocket.development_servers.push_back(server_url);
     
     // Set device info with custom headers
@@ -38,7 +38,7 @@ bool test_websocket_connection(const std::string& server_url) {
     int protocol_version = 3;
     std::string user_data = "{\"test\":\"integration\"}";
     
-    // 初始化 WebSocketBridge，传递正确的参数
+    // Initialize WebSocketBridge with the correct parameters
     uv_loop_t* loop = nullptr;
     int ret = ws_bridge.InitializeWithDeviceInfo(config, loop, mac_address, protocol_version, user_data);
     if (ret != error::SUCCESS) {

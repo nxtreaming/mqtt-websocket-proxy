@@ -4,10 +4,6 @@
 
 namespace xiaozhi {
 
-// ============================================================================
-// MQTTPacket Base Class
-// ============================================================================
-
 MQTTPacket::MQTTPacket(MQTTPacketType type) : type_(type) {
 }
 
@@ -85,10 +81,6 @@ int MQTTPacket::DecodeString(const std::vector<uint8_t>& buffer, size_t offset, 
     str.assign(buffer.begin() + offset + 2, buffer.begin() + offset + 2 + length);
     return 2 + length;
 }
-
-// ============================================================================
-// MQTT CONNECT Packet
-// ============================================================================
 
 MQTTConnectPacket::MQTTConnectPacket() 
     : MQTTPacket(MQTTPacketType::CONNECT)
@@ -191,10 +183,6 @@ size_t MQTTConnectPacket::GetSize() const {
     return size;
 }
 
-// ============================================================================
-// MQTT CONNACK Packet
-// ============================================================================
-
 MQTTConnackPacket::MQTTConnackPacket() 
     : MQTTPacket(MQTTPacketType::CONNACK)
     , connect_flags_(0)
@@ -228,10 +216,6 @@ int MQTTConnackPacket::Deserialize(const std::vector<uint8_t>& buffer, size_t of
 size_t MQTTConnackPacket::GetSize() const {
     return 4; // Fixed header (2) + Variable header (2)
 }
-
-// ============================================================================
-// MQTT PUBLISH Packet (QoS 0 only)
-// ============================================================================
 
 MQTTPublishPacket::MQTTPublishPacket() 
     : MQTTPacket(MQTTPacketType::PUBLISH)
@@ -290,10 +274,6 @@ size_t MQTTPublishPacket::GetSize() const {
     return size;
 }
 
-// ============================================================================
-// MQTT PINGREQ/PINGRESP Packets
-// ============================================================================
-
 MQTTPingreqPacket::MQTTPingreqPacket() : MQTTPacket(MQTTPacketType::PINGREQ) {
 }
 
@@ -330,10 +310,6 @@ size_t MQTTPingrespPacket::GetSize() const {
     return 2; // Fixed header only
 }
 
-// ============================================================================
-// MQTT DISCONNECT Packet
-// ============================================================================
-
 MQTTDisconnectPacket::MQTTDisconnectPacket() : MQTTPacket(MQTTPacketType::DISCONNECT) {
 }
 
@@ -351,10 +327,6 @@ int MQTTDisconnectPacket::Deserialize(const std::vector<uint8_t>& buffer, size_t
 size_t MQTTDisconnectPacket::GetSize() const {
     return 2; // Fixed header only
 }
-
-// ============================================================================
-// MQTT SUBSCRIBE Packet
-// ============================================================================
 
 MQTTSubscribePacket::MQTTSubscribePacket() : MQTTPacket(MQTTPacketType::SUBSCRIBE) {
     packet_id_ = 0;
@@ -410,10 +382,6 @@ int MQTTSubscribePacket::Deserialize(const std::vector<uint8_t>& buffer, size_t 
 size_t MQTTSubscribePacket::GetSize() const {
     return 2 + 2 + topic_.length() + 1; // Packet ID + topic length + topic + QoS
 }
-
-// ============================================================================
-// MQTT SUBACK Packet
-// ============================================================================
 
 MQTTSubackPacket::MQTTSubackPacket() : MQTTPacket(MQTTPacketType::SUBACK) {
     packet_id_ = 0;

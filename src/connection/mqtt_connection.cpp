@@ -649,18 +649,18 @@ void MQTTConnection::SendUdpMessage(const std::vector<uint8_t>& opus_data, uint3
     // Create UDP packet header (JavaScript version packet header format)
     std::vector<uint8_t> header(16);
 
-    // JavaScript版本: this.headerBuffer.writeUInt8(1, 0); // type
+    // JavaScript version: headerBuffer.writeUInt8(1, 0); // type
     header[0] = 1;
 
-    // JavaScript版本: this.headerBuffer.writeUInt8(0, 1); // flag
+    // JavaScript version: headerBuffer.writeUInt8(0, 1); // flag
     header[1] = 0;
 
-    // JavaScript版本: this.headerBuffer.writeUInt16BE(opus.length, 2); // payloadLength
+    // JavaScript version: headerBuffer.writeUInt16BE(opus.length, 2); // payloadLength
     uint16_t payload_length = static_cast<uint16_t>(opus_data.size());
     header[2] = (payload_length >> 8) & 0xFF;
     header[3] = payload_length & 0xFF;
 
-    // JavaScript版本: this.headerBuffer.writeUInt32BE(this.udp.cookie, 4); // cookie
+    // JavaScript version: headerBuffer.writeUInt32BE(this.udp.cookie, 4); // cookie
     header[4] = (udp_info_.cookie >> 24) & 0xFF;
     header[5] = (udp_info_.cookie >> 16) & 0xFF;
     header[6] = (udp_info_.cookie >> 8) & 0xFF;
