@@ -115,7 +115,7 @@ mqtt-websocket-proxy/
 │   │   ├── config_manager.cpp   # Configuration management implementation
 │   │   ├── config_manager.h     # Configuration interface
 │   │   ├── crypto_utils.cpp     # Cryptographic simulated implementation
-│   ├── crypto_utils_openssl.cpp # OpenSSL-based crypto implementation
+│   |   ├── crypto_utils_openssl.cpp # OpenSSL-based crypto implementation
 │   │   ├── crypto_utils.h       # Crypto utilities interface
 │   │   ├── logger.cpp           # Logging implementation
 │   │   ├── logger.h             # Logging interface
