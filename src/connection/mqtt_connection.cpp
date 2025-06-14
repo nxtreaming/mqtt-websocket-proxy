@@ -193,8 +193,8 @@ int MQTTConnection::SendUDPInfo(const UDPConnectionInfo& udp_info) {
     // Format: topic="$SYS/udp/info", payload=JSON with UDP connection details including encryption
 
     // Convert encryption key and nonce to hex strings (compatible with JS)
-    std::string key_hex = crypto::utils::EncodeBase64(udp_info.encryption_key);
-    std::string nonce_hex = crypto::utils::EncodeBase64(udp_info.nonce);
+    std::string key_hex = crypto::utils::EncodeHex(udp_info.encryption_key);
+    std::string nonce_hex = crypto::utils::EncodeHex(udp_info.nonce);
 
     // Create JSON payload with UDP info (compatible with JS hello response)
     nlohmann::json udp_json;
@@ -228,7 +228,7 @@ int MQTTConnection::SendUDPInfo(const UDPConnectionInfo& udp_info) {
     LOG_DEBUG("Sending encrypted UDP info to client " + std::to_string(connection_id_) +
               ": session=" + udp_info.session_id + ", encryption=" + udp_info.encryption_method);
 
-    return ForwardFromWebSocket("hello", json_payload);
+    return ForwardFromWebSocket(credentials_.reply_to_topic, json_payload);
 }
 
 ConnectionId MQTTConnection::GetConnectionId() const {

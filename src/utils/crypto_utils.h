@@ -176,6 +176,20 @@ std::vector<uint8_t> CreateKeyFromSessionId(const std::string& session_id);
 XIAOZHI_CRYPTO_API std::string EncodeBase64(const std::vector<uint8_t>& data);
 
 /**
+ * @brief Encode binary data to lowercase hexadecimal string
+ * @param data Input binary data
+ * @return Hex encoded string
+ */
+XIAOZHI_CRYPTO_API std::string EncodeHex(const std::vector<uint8_t>& data);
+
+/**
+ * @brief Decode lowercase hexadecimal string to binary data
+ * @param hex_str Hex encoded string (even length)
+ * @return Decoded binary data; empty if input invalid
+ */
+XIAOZHI_CRYPTO_API std::vector<uint8_t> DecodeHex(const std::string& hex_str);
+
+/**
  * @brief Decode base64 string to binary data
  * @param base64_str Base64 encoded string
  * @return Decoded binary data

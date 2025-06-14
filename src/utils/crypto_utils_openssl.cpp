@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cstring>
 #include <algorithm>
+#include <sstream>
+#include <iomanip>
 
 namespace xiaozhi {
 namespace crypto {
@@ -289,6 +291,38 @@ int UDPHeaderGenerator::ParseWebSocketAudioPacket(const std::vector<uint8_t>& pa
 }
 
 namespace utils {
+
+std::string EncodeHex(const std::vector<uint8_t>& data) {
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (uint8_t byte : data) {
+        oss << std::setw(2) << static_cast<int>(byte);
+    }
+    return oss.str();
+}
+
+std::vector<uint8_t> DecodeHex(const std::string& hex_str) {
+    if (hex_str.length() % 2 != 0) {
+        return {};
+    }
+    std::vector<uint8_t> result;
+    result.reserve(hex_str.length() / 2);
+    auto hexValue = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (size_t i = 0; i < hex_str.length(); i += 2) {
+        int hi = hexValue(hex_str[i]);
+        int lo = hexValue(hex_str[i + 1]);
+        if (hi < 0 || lo < 0) {
+            return {};
+        }
+        result.push_back(static_cast<uint8_t>((hi << 4) | lo));
+    }
+    return result;
+}
 
 std::vector<uint8_t> CreateKeyFromSessionId(const std::string& session_id) {
     // Use OpenSSL to create a proper key derivation
