@@ -89,21 +89,40 @@ notepad config/gateway.json  # Windows
 mqtt-websocket-proxy/
 ├── CMakeLists.txt              # Main CMake configuration
 ├── src/                        # Source code
-│   ├── main.cpp               # Program entry point
-│   ├── server/                # Server core
-│   │   ├── gateway_server.h   # Gateway server
-│   │   ├── mqtt_server.h      # MQTT server
-│   │   └── udp_server.h       # UDP server
+│   ├── main.cpp                # Program entry point
+│   │
+│   ├── server/                # Server core implementation
+│   │   ├── gateway_server.cpp  # Main gateway server implementation
+│   │   ├── gateway_server.h    # Gateway server interface
+│   │   ├── mqtt_server.cpp     # MQTT server implementation
+│   │   ├── mqtt_server.h       # MQTT server interface
+│   │   ├── udp_server.cpp      # UDP server implementation
+│   │   └── udp_server.h        # UDP server interface
+│   │
 │   ├── protocol/              # Protocol handling
-│   │   ├── mqtt_protocol.h    # MQTT protocol parsing
-│   │   └── mqtt_packet.h      # MQTT packets
+│   │   ├── mqtt_packet.cpp     # MQTT packet serialization/deserialization
+│   │   ├── mqtt_packet.h       # MQTT packet definitions
+│   │   ├── mqtt_protocol.cpp   # MQTT protocol implementation
+│   │   └── mqtt_protocol.h     # MQTT protocol interface
+│   │
 │   ├── connection/            # Connection management
-│   │   ├── mqtt_connection.h  # MQTT connection
-│   │   └── websocket_bridge.h # WebSocket bridge
-│   ├── utils/                 # Utility classes
-│   │   ├── config_manager.h   # Configuration management
-│   │   ├── logger.h           # Logging system
-│   │   └── crypto_utils.h     # Encryption utilities
+│   │   ├── mqtt_connection.cpp  # MQTT connection handling
+│   │   ├── mqtt_connection.h    # MQTT connection interface
+│   │   ├── websocket_bridge.cpp # WebSocket bridge implementation
+│   │   └── websocket_bridge.h   # WebSocket bridge interface
+│   │
+│   ├── utils/                 # Utility components
+│   │   ├── config_manager.cpp   # Configuration management implementation
+│   │   ├── config_manager.h     # Configuration interface
+│   │   ├── crypto_utils.cpp     # Cryptographic utilities implementation
+│   │   ├── crypto_utils.h       # Crypto utilities interface
+│   │   ├── logger.cpp           # Logging implementation
+│   │   ├── logger.h             # Logging interface
+│   │   ├── mcp_proxy.cpp        # MCP proxy implementation
+│   │   └── mcp_proxy.h          # MCP proxy interface
+│   │   ├── mqtt_auth.cpp        # MQTT authentication implementation
+│   │   └── mqtt_auth.h          # Authentication interface
+│   │
 │   └── common/                # Common definitions
 │       ├── types.h            # Type definitions
 │       ├── constants.h        # Constant definitions
