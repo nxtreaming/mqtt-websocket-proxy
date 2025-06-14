@@ -66,6 +66,25 @@ int UDPServer::Initialize(const ServerConfig& config) {
     return error::SUCCESS;
 }
 
+int UDPServer::UpdateConfig(const ServerConfig& config) {
+    LOG_INFO("Updating UDP server configuration");
+    
+    // Update public IP if changed
+    if (config_.udp.public_ip != config.udp.public_ip) {
+        LOG_INFO("Updating public IP: " + config.udp.public_ip);
+        config_.udp.public_ip = config.udp.public_ip;
+        // Apply the change to the server
+    }
+    
+    // Update debug level
+    if (config_.debug != config.debug) {
+        config_.debug = config.debug;
+        // Update logging level if needed
+    }
+    
+    return error::SUCCESS;
+}
+
 int UDPServer::Start() {
     if (running_.load()) {
         LOG_WARN("UDP server is already running");
@@ -104,6 +123,15 @@ int UDPServer::Start() {
     
     LOG_INFO("UDP server started on " + config_.udp.host + ":" + std::to_string(config_.udp.port));
     return error::SUCCESS;
+}
+
+void UDPServer::SetSessionId(const std::string& session_id) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    
+    // Store the session ID for future use
+    default_session_id_ = session_id;
+    
+    LOG_DEBUG("UDP server session ID set: " + session_id);
 }
 
 int UDPServer::Stop() {

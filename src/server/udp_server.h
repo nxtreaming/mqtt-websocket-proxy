@@ -43,6 +43,19 @@ public:
      * @return Error code, 0 indicates success
      */
     int Initialize(const ServerConfig& config);
+
+    /**
+     * @brief Update the server configuration
+     * @param config New server configuration
+     * @return Error code, 0 indicates success
+     */
+    int UpdateConfig(const ServerConfig& config);
+    
+    /**
+     * @brief Set the session ID for UDP connections
+     * @param session_id The session ID to set
+     */
+    void SetSessionId(const std::string& session_id);
     
     /**
      * @brief Start the UDP server
@@ -225,6 +238,7 @@ private:
     std::unordered_map<std::string, std::string> address_to_session_; // address -> session_id
     std::unordered_map<std::string, std::unique_ptr<crypto::AudioCrypto>> session_crypto_; // session_id -> crypto
     std::unordered_map<std::string, std::vector<uint8_t>> session_keys_; // session_id -> encryption key
+    std::string default_session_id_; // Default session ID from WebSocket
     
     // Statistics
     mutable UDPServerStats stats_;

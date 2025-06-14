@@ -80,46 +80,63 @@ bool MqttAuthenticator::ParseClientId(const std::string& client_id,
         return false;
     }
     
-    // Split client ID by separator
+    // JavaScript version uses "@@@" as separator
+    // Example: "GID_xxx@@@mac_address@@@uuid"
     const std::string separator = "@@@";
-    size_t first_sep = client_id.find(separator);
     
-    // Check if separator exists
-    if (first_sep == std::string::npos) {
-        LOG_WARN("Missing separator in client ID: " + client_id);
+    // Split client ID into parts
+    std::vector<std::string> parts;
+    size_t start = 0;
+    size_t end = client_id.find(separator);
+    
+    while (end != std::string::npos) {
+        parts.push_back(client_id.substr(start, end - start));
+        start = end + separator.length();
+        end = client_id.find(separator, start);
+    }
+    
+    // Add the last part
+    if (start < client_id.length()) {
+        parts.push_back(client_id.substr(start));
+    }
+    
+    // Check if we have at least 2 parts (group_id and mac_address)
+    if (parts.size() < 2) {
+        LOG_WARN("Invalid client ID format (missing parts): " + client_id);
         return false;
     }
     
-    // Extract group ID
-    group_id = client_id.substr(0, first_sep);
+    // Extract group ID (first part)
+    group_id = parts[0];
     if (group_id.empty()) {
         LOG_WARN("Empty group ID in client ID: " + client_id);
         return false;
     }
     
-    // Extract MAC address and UUID (if present)
-    size_t second_sep = client_id.find(separator, first_sep + separator.length());
-    
-    if (second_sep == std::string::npos) {
-        // Format: GID_xxx@@@mac_address
-        mac_address = client_id.substr(first_sep + separator.length());
-    } else {
-        // Format: GID_xxx@@@mac_address@@@uuid
-        mac_address = client_id.substr(first_sep + separator.length(), 
-                                     second_sep - (first_sep + separator.length()));
-        uuid = client_id.substr(second_sep + separator.length());
-    }
-    
-    // Check if MAC address is empty
+    // Extract MAC address (second part)
+    mac_address = parts[1];
     if (mac_address.empty()) {
         LOG_WARN("Empty MAC address in client ID: " + client_id);
         return false;
     }
     
+    // Extract UUID if present (third part)
+    if (parts.size() >= 3) {
+        uuid = parts[2];
+    }
+    
     // Convert MAC address format if needed (xx_xx_xx_xx_xx_xx -> xx:xx:xx:xx:xx:xx)
+    // JavaScript version: macAddress = macAddress.replace(/_/g, ':')
     if (mac_address.find('_') != std::string::npos) {
         mac_address = ConvertMacAddressFormat(mac_address);
     }
+    
+    // JavaScript version also converts MAC address to lowercase
+    std::transform(mac_address.begin(), mac_address.end(), mac_address.begin(),
+                  [](unsigned char c) { return std::tolower(c); });
+    
+    LOG_DEBUG("Parsed client ID: group_id=" + group_id + ", mac=" + mac_address + 
+             (uuid.empty() ? "" : ", uuid=" + uuid));
     
     return true;
 }

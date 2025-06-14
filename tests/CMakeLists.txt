@@ -14,6 +14,7 @@ set(TEST_EXECUTABLES
     test_audio_packet_format
     test_websocket_reconnection
     test_complete_gateway
+    integration_test
 )
 
 # Add include paths for the main project
@@ -171,6 +172,18 @@ target_include_directories(test_complete_gateway PRIVATE
 )
 
 target_link_libraries(test_complete_gateway PRIVATE
+    ${COMMON_TEST_LIBS}
+)
+
+# Integration Test
+add_executable(integration_test integration_test.cpp)
+
+target_include_directories(integration_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
+target_link_libraries(integration_test PRIVATE
     ${COMMON_TEST_LIBS}
 )
 

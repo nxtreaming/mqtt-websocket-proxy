@@ -12,6 +12,9 @@
     #define XIAOZHI_CRYPTO_API __attribute__((visibility("default")))
 #endif
 
+// Define which crypto implementation to use
+// This is set by CMake based on USE_OPENSSL_CRYPTO option
+
 #include <vector>
 #include <string>
 #include <cstdint>

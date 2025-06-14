@@ -24,6 +24,7 @@
 #include <nlohmann/json.hpp>
 #include <regex>
 #include <chrono>
+#include <sstream>
 
 namespace xiaozhi {
 
@@ -95,6 +96,47 @@ int WebSocketBridge::Initialize(const ServerConfig& config, uv_loop_t* loop) {
     SetReconnectionPolicy(true, 0, 1000, 30000, 2.0);
 
     LOG_INFO("WebSocket bridge initialized with reconnection support");
+    return error::SUCCESS;
+}
+
+int WebSocketBridge::UpdateConfig(const ServerConfig& config) {
+    LOG_INFO("Updating WebSocket bridge configuration");
+    
+    bool servers_changed = false;
+    
+    // Check if development servers changed
+    if (config_.websocket.development_servers != config.websocket.development_servers) {
+        LOG_INFO("Development WebSocket servers updated");
+        config_.websocket.development_servers = config.websocket.development_servers;
+        servers_changed = true;
+    }
+    
+    // Check if production servers changed
+    if (config_.websocket.production_servers != config.websocket.production_servers) {
+        LOG_INFO("Production WebSocket servers updated");
+        config_.websocket.production_servers = config.websocket.production_servers;
+        servers_changed = true;
+    }
+    
+    // Check if development MAC addresses changed
+    if (config_.websocket.development_mac_addresses != config.websocket.development_mac_addresses) {
+        LOG_INFO("Development MAC addresses updated");
+        config_.websocket.development_mac_addresses = config.websocket.development_mac_addresses;
+    }
+    
+    // Update debug level
+    if (config_.debug != config.debug) {
+        config_.debug = config.debug;
+        // Update logging level if needed
+    }
+    
+    // If server lists changed and we're connected, consider reconnecting
+    // to potentially use a different server from the updated list
+    if (servers_changed && IsConnected() && reconnection_enabled_) {
+        LOG_INFO("WebSocket server list changed, scheduling reconnection");
+        StartReconnectionTimer();
+    }
+    
     return error::SUCCESS;
 }
 
@@ -184,6 +226,34 @@ int WebSocketBridge::Connect(const std::string& server_url) {
     ccinfo.origin = host.c_str();
     ccinfo.protocol = protocols[0].name;
     ccinfo.userdata = this;
+    
+    // Add required custom headers for compatibility with JavaScript version
+    // Format: "header-name: header-value\r\n"
+    std::string headers;
+    
+    // Add device-id header (MAC address)
+    if (!mac_address_.empty()) {
+        headers += "device-id: " + mac_address_ + "\r\n";
+    }
+    
+    // Add protocol-version header
+    headers += "protocol-version: " + std::to_string(protocol_version_) + "\r\n";
+    
+    // Add user-data header if available
+    if (!user_data_.empty()) {
+        headers += "user-data: " + user_data_ + "\r\n";
+    }
+    
+    // Add client-type header
+    headers += "client-type: cpp\r\n";
+    
+    // Set headers in connection info
+    if (!headers.empty()) {
+        LOG_DEBUG("Adding WebSocket headers: " + headers);
+        // Store headers for later use with lws_client_connect_via_info
+        // Headers will be set using lws protocol callbacks
+        custom_headers_ = headers;
+    }
     
     if (use_ssl) {
         ccinfo.ssl_connection = LCCSCF_USE_SSL | LCCSCF_ALLOW_SELFSIGNED | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
@@ -479,6 +549,55 @@ int WebSocketBridge::WebSocketCallback(struct lws* wsi, enum lws_callback_reason
                 }
             }
             break;
+            
+        case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
+            // This callback allows us to add custom headers to the client handshake
+            if (!bridge->custom_headers_.empty()) {
+                unsigned char **p = (unsigned char **)in;
+                unsigned char *end = (*p) + len;
+                
+                // Parse the custom headers string and add each header
+                std::istringstream headers_stream(bridge->custom_headers_);
+                std::string header_line;
+                
+                while (std::getline(headers_stream, header_line)) {
+                    // Skip empty lines
+                    if (header_line.empty() || header_line == "\r") {
+                        continue;
+                    }
+                    
+                    // Remove trailing \r if present
+                    if (!header_line.empty() && header_line.back() == '\r') {
+                        header_line.pop_back();
+                    }
+                    
+                    // Find the colon separator
+                    size_t colon_pos = header_line.find(':');
+                    if (colon_pos != std::string::npos) {
+                        std::string name = header_line.substr(0, colon_pos);
+                        // Skip the colon and any leading space
+                        size_t value_start = colon_pos + 1;
+                        while (value_start < header_line.size() && header_line[value_start] == ' ') {
+                            value_start++;
+                        }
+                        std::string value = header_line.substr(value_start);
+                        
+                        LOG_DEBUG("Adding header: '" + name + "' with value '" + value + "'");
+                        
+                        if (lws_add_http_header_by_name(wsi, 
+                                                       (unsigned char *)name.c_str(),
+                                                       (unsigned char *)value.c_str(), 
+                                                       value.length(), 
+                                                       p, 
+                                                       end)) {
+                            LOG_ERROR("Failed to add header: " + name);
+                            return -1;
+                        }
+                    }
+                }
+            }
+            break;
+        }
             
         case LWS_CALLBACK_CLIENT_WRITEABLE:
             bridge->ProcessSendQueue();

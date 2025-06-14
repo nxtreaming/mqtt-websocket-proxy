@@ -41,7 +41,9 @@ MQTTConnection::MQTTConnection(ConnectionId connection_id, uv_tcp_t* tcp_handle,
     , device_said_goodbye_(false)
     , closing_(false)
     , config_(config)
-    , udp_info_() {
+    , udp_info_()
+    , session_start_time_(std::chrono::steady_clock::now())
+    , session_duration_ms_(0) {
 
     tcp_handle_->data = this;
     read_buffer_.reserve(constants::TCP_BUFFER_SIZE);
@@ -241,6 +243,16 @@ bool MQTTConnection::IsActive() const {
     return active_;
 }
 
+std::chrono::milliseconds MQTTConnection::GetSessionDuration() const {
+    if (active_) {
+        // Calculate current duration if session is still active
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now - session_start_time_);
+    }
+    // Return stored duration if session has ended
+    return session_duration_ms_;
+}
+
 bool MQTTConnection::IsKeepAliveTimeout() const {
     return mqtt_protocol_ ? mqtt_protocol_->IsKeepAliveTimeout() : false;
 }
@@ -415,6 +427,20 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
             hello_msg["version"] = json.value("version", 3);
             hello_msg["transport"] = "websocket";
             
+            // Add client ID (JavaScript version: this.clientId)
+            hello_msg["client_id"] = client_id_;
+            
+            // Add MAC address (JavaScript version: this.macAddress)
+            hello_msg["mac_address"] = credentials_.mac_address;
+            
+            // Add group ID (JavaScript version: this.groupId)
+            hello_msg["group_id"] = credentials_.group_id;
+            
+            // Add UUID if available (JavaScript version: this.uuid)
+            if (!credentials_.uuid.empty()) {
+                hello_msg["uuid"] = credentials_.uuid;
+            }
+            
             // Add audio parameters
             if (json.contains("audio_params")) {
                 hello_msg["audio_params"] = json["audio_params"];
@@ -442,6 +468,12 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
                 features["supported_codecs"] = nlohmann::json::array({"opus"});
                 hello_msg["features"] = features;
             }
+            
+            // Add timestamp (JavaScript version: Date.now())
+            auto now = std::chrono::system_clock::now();
+            auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()).count();
+            hello_msg["timestamp"] = timestamp;
             
             // Send hello message
             websocket_bridge_->SendMessage(hello_msg.dump());
@@ -687,6 +719,30 @@ void MQTTConnection::OnMQTTDisconnect() {
 
     // JavaScript version: this.deviceSaidGoodbye = true
     device_said_goodbye_ = true;
+    
+    // Calculate final session duration
+    auto now = std::chrono::steady_clock::now();
+    session_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(now - session_start_time_);
+    LOG_INFO("Session duration for " + client_id_ + ": " + 
+             std::to_string(session_duration_ms_.count()) + " ms");
+
+    // Send goodbye message to WebSocket server if we have a bridge
+    if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
+        try {
+            // Create goodbye message
+            nlohmann::json goodbye_msg;
+            goodbye_msg["type"] = "goodbye";
+            goodbye_msg["client_id"] = client_id_;
+            goodbye_msg["session_duration_ms"] = session_duration_ms_.count();
+            goodbye_msg["reason"] = "client_disconnect";
+            
+            // Send goodbye message
+            websocket_bridge_->SendMessage(goodbye_msg.dump());
+            LOG_INFO("Sent goodbye message to WebSocket server for client " + client_id_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to send goodbye message: " + std::string(e.what()));
+        }
+    }
 
     // Close WebSocket bridge (JavaScript version: if (this.bridge) { this.bridge.close(); })
     if (websocket_bridge_) {
@@ -704,6 +760,33 @@ void MQTTConnection::OnMQTTDisconnect() {
 void MQTTConnection::OnMQTTError(int error_code, const std::string& message) {
     LOG_ERROR("MQTT error for " + client_id_ + ": " + message + 
               " (code: " + std::to_string(error_code) + ")");
+    
+    // Calculate final session duration
+    auto now = std::chrono::steady_clock::now();
+    session_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(now - session_start_time_);
+    LOG_INFO("Session duration for " + client_id_ + ": " + 
+             std::to_string(session_duration_ms_.count()) + " ms");
+    
+    // Send goodbye message with error reason
+    if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
+        try {
+            // Create goodbye message
+            nlohmann::json goodbye_msg;
+            goodbye_msg["type"] = "goodbye";
+            goodbye_msg["client_id"] = client_id_;
+            goodbye_msg["session_duration_ms"] = session_duration_ms_.count();
+            goodbye_msg["reason"] = "mqtt_error";
+            goodbye_msg["error_code"] = error_code;
+            goodbye_msg["error_message"] = message;
+            
+            // Send goodbye message
+            websocket_bridge_->SendMessage(goodbye_msg.dump());
+            LOG_INFO("Sent goodbye message to WebSocket server for client " + client_id_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to send goodbye message: " + std::string(e.what()));
+        }
+    }
+    
     Stop();
     
     if (disconnect_callback_) {
@@ -742,9 +825,35 @@ void MQTTConnection::Close() {
 
     LOG_DEBUG("Closing MQTT connection " + std::to_string(connection_id_));
 
+    // Calculate final session duration if not already done (if not disconnected gracefully)
+    if (active_) {
+        auto now = std::chrono::steady_clock::now();
+        session_duration_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(now - session_start_time_);
+        LOG_INFO("Session duration for " + client_id_ + ": " + 
+                 std::to_string(session_duration_ms_.count()) + " ms");
+    }
+
     // JavaScript version: this.closing = true
     closing_ = true;
     active_ = false;
+
+    // Send goodbye message to WebSocket server if we have a bridge and client didn't say goodbye
+    if (!device_said_goodbye_ && websocket_bridge_ && websocket_bridge_->IsConnected()) {
+        try {
+            // Create goodbye message
+            nlohmann::json goodbye_msg;
+            goodbye_msg["type"] = "goodbye";
+            goodbye_msg["client_id"] = client_id_;
+            goodbye_msg["session_duration_ms"] = session_duration_ms_.count();
+            goodbye_msg["reason"] = "connection_closed";
+            
+            // Send goodbye message
+            websocket_bridge_->SendMessage(goodbye_msg.dump());
+            LOG_INFO("Sent goodbye message to WebSocket server for client " + client_id_);
+        } catch (const std::exception& e) {
+            LOG_ERROR("Failed to send goodbye message: " + std::string(e.what()));
+        }
+    }
 
     // Close WebSocket bridge (JavaScript version: if (this.bridge) { this.bridge.close(); })
     if (websocket_bridge_) {

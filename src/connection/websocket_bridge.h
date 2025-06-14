@@ -52,6 +52,13 @@ public:
     int Initialize(const ServerConfig& config, uv_loop_t* loop = nullptr);
 
     /**
+     * @brief Update the server configuration
+     * @param config New server configuration
+     * @return Error code, 0 indicates success
+     */
+    int UpdateConfig(const ServerConfig& config);
+
+    /**
      * @brief Initialize WebSocket bridge with device info (JavaScript version compatible)
      * @param config Server configuration
      * @param loop Event loop
@@ -259,6 +266,7 @@ private:
     std::string mac_address_;
     int protocol_version_;
     std::string user_data_;
+    std::string custom_headers_;
     bool device_said_goodbye_;
 
     // libwebsockets context and connection

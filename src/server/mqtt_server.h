@@ -44,6 +44,21 @@ public:
      * @return Error code, 0 indicates success
      */
     int Initialize(const ServerConfig& config);
+
+    /**
+     * @brief Update the server configuration
+     * @param config New server configuration
+     * @return Error code, 0 indicates success
+     */
+    int UpdateConfig(const ServerConfig& config);
+    
+    /**
+     * @brief Broadcast a message to all connected MQTT clients
+     * @param topic The topic to publish to
+     * @param payload The message payload
+     * @return Error code, 0 indicates success
+     */
+    int BroadcastMessage(const std::string& topic, const std::string& payload);
     
     /**
      * @brief Start listening for connections

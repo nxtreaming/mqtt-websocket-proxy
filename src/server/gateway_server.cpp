@@ -278,21 +278,43 @@ void GatewayServer::OnConfigChanged(const ServerConfig& new_config) {
              std::to_string(new_config.websocket.production_servers.size()) + " prod");
 
     // Note: Port changes require server restart, only log warnings here
+    bool restart_required = false;
+    
     if (config_.mqtt.port != new_config.mqtt.port) {
         LOG_WARN("MQTT port changed from " + std::to_string(config_.mqtt.port) +
                  " to " + std::to_string(new_config.mqtt.port) +
                  " - restart required for this change to take effect");
+        restart_required = true;
     }
 
     if (config_.udp.port != new_config.udp.port) {
         LOG_WARN("UDP port changed from " + std::to_string(config_.udp.port) +
                  " to " + std::to_string(new_config.udp.port) +
                  " - restart required for this change to take effect");
+        restart_required = true;
+    }
+    
+    // Propagate configuration changes to all components
+    if (mqtt_server_) {
+        mqtt_server_->UpdateConfig(new_config);
+    }
+    
+    if (udp_server_) {
+        udp_server_->UpdateConfig(new_config);
+    }
+    
+    if (websocket_bridge_) {
+        websocket_bridge_->UpdateConfig(new_config);
+    }
+    
+    // If restart is required, notify the user or implement auto-restart logic
+    if (restart_required) {
+        LOG_WARN("Some configuration changes require a server restart to take effect");
+        // Optional: Implement auto-restart logic here if desired
     }
 
     LOG_INFO("Configuration change applied successfully");
 }
-
 
 uv_loop_t* GatewayServer::GetEventLoop() const {
     return event_loop_.get();
@@ -616,49 +638,99 @@ void GatewayServer::OnWebSocketMessageReceived(const std::string& message) {
 
     // Parse JSON message and process based on message type
     try {
-        nlohmann::json json_msg = nlohmann::json::parse(message);
+        nlohmann::json json = nlohmann::json::parse(message);
 
-        if (json_msg.contains("type")) {
-            std::string msg_type = json_msg["type"];
-            
-            // Handle server hello reply which may contain session ID
-            if (msg_type == "hello" || msg_type == "server_hello") {
-                // If the server provides a session ID, use it
-                if (json_msg.contains("session_id")) {
-                    std::string server_session_id = json_msg["session_id"];
-                    if (!server_session_id.empty()) {
-                        LOG_INFO("Received session ID from server: " + server_session_id);
-                        std::lock_guard<std::mutex> lock(websocket_session_mutex_);
-                        active_websocket_session_id_ = server_session_id;
+        // Check if message has a type field
+        if (json.contains("type")) {
+            std::string type = json["type"];
+
+            // Route messages based on type
+            if (type == "hello") {
+                // Route hello messages to MQTT connection handler
+                LOG_DEBUG("Received hello message from WebSocket, routing to MQTT connection");
+                
+                // Update session ID if present
+                if (json.contains("session_id")) {
+                    std::string session_id = json["session_id"];
+                    LOG_DEBUG("Received hello with session_id: " + session_id);
+                    
+                    // Store session ID for UDP server
+                    if (udp_server_) {
+                        udp_server_->SetSessionId(session_id);
                     }
                 }
                 
-                // Process other hello message fields if needed
-                LOG_INFO("Received hello from WebSocket server");
-            }
-            // Handle MQTT message forwarding
-            else if (msg_type == "mqtt_forward") {
-                std::string topic = json_msg.value("topic", "");
-                std::string payload = json_msg.value("payload", "");
-
-                if (!topic.empty()) {
-                    // Broadcast to all MQTT clients
-                    if (mqtt_server_) {
-                        mqtt_server_->BroadcastToClients(topic, payload);
-                        LOG_DEBUG("Forwarded WebSocket message to MQTT clients: " + topic);
+                // Forward hello message to MQTT clients
+                if (mqtt_server_) {
+                    mqtt_server_->BroadcastMessage("hello", message);
+                }
+                
+            } else if (type == "mcp") {
+                // Route MCP messages to MCP handler
+                LOG_DEBUG("Received MCP message from WebSocket");
+                
+                // Forward to MQTT clients with MCP topic
+                if (mqtt_server_) {
+                    mqtt_server_->BroadcastMessage("mcp", message);
+                }
+                
+            } else if (type == "server_hello") {
+                // Update session ID if present
+                if (json.contains("session_id")) {
+                    std::string session_id = json["session_id"];
+                    LOG_DEBUG("Received server_hello with session_id: " + session_id);
+                    
+                    // Store session ID for UDP server
+                    if (udp_server_) {
+                        udp_server_->SetSessionId(session_id);
                     }
                 }
-            }
-            // Handle session management messages
-            else if (msg_type == "session_update" && json_msg.contains("session_id")) {
-                std::string session_id = json_msg["session_id"];
-                LOG_INFO("Session update received: " + session_id);
-                std::lock_guard<std::mutex> lock(websocket_session_mutex_);
-                active_websocket_session_id_ = session_id;
+                
+            } else if (type == "mqtt_forward") {
+                // Forward message to MQTT clients
+                if (json.contains("topic") && json.contains("payload")) {
+                    std::string topic = json["topic"];
+                    std::string payload;
+                    
+                    // Payload can be string or object
+                    if (json["payload"].is_string()) {
+                        payload = json["payload"];
+                    } else {
+                        payload = json["payload"].dump();
+                    }
+                    
+                    LOG_DEBUG("Forwarding message to MQTT clients: topic=" + topic);
+                    
+                    // Broadcast to all MQTT clients
+                    if (mqtt_server_) {
+                        mqtt_server_->BroadcastMessage(topic, payload);
+                    }
+                }
+                
+            } else if (type == "session_update") {
+                // Update session ID
+                if (json.contains("session_id")) {
+                    std::string session_id = json["session_id"];
+                    LOG_DEBUG("Received session update: " + session_id);
+                    
+                    // Store session ID for UDP server
+                    if (udp_server_) {
+                        udp_server_->SetSessionId(session_id);
+                    }
+                }
+                
+            } else {
+                // Other message types - broadcast to MQTT clients
+                LOG_DEBUG("Broadcasting message type '" + type + "' to MQTT clients");
+                
+                if (mqtt_server_) {
+                    // Use the message type as the topic
+                    mqtt_server_->BroadcastMessage(type, message);
+                }
             }
         }
     } catch (const std::exception& e) {
-        LOG_WARN("Failed to parse WebSocket message as JSON: " + std::string(e.what()));
+        LOG_ERROR("Failed to parse WebSocket message: " + std::string(e.what()));
     }
 }
 

@@ -9,6 +9,7 @@
 #include <uv.h>
 #include <memory>
 #include <functional>
+#include <chrono>
 
 namespace xiaozhi {
 
@@ -106,6 +107,12 @@ public:
      * @return true if active
      */
     bool IsActive() const;
+    
+    /**
+     * @brief Get the current session duration in milliseconds
+     * @return Session duration in milliseconds
+     */
+    std::chrono::milliseconds GetSessionDuration() const;
     
     /**
      * @brief Check for keep alive timeout
@@ -225,6 +232,10 @@ private:
     // Connection state management (JavaScript version compatible)
     bool device_said_goodbye_;
     bool closing_;
+    
+    // Session duration tracking
+    std::chrono::steady_clock::time_point session_start_time_;
+    std::chrono::milliseconds session_duration_ms_;
 
     // Authentication information (compatible with JavaScript version)
     auth::MqttCredentials credentials_;

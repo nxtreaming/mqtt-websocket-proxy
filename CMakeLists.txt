@@ -63,6 +63,14 @@ option(USE_SYSTEM_LIBUV "Use system libuv" OFF)
 option(USE_SYSTEM_LIBWEBSOCKETS "Use system libwebsockets" OFF)
 option(BUILD_TESTS "Build tests" ON)
 
+# Crypto implementation option
+option(USE_OPENSSL_CRYPTO "Use OpenSSL for AES-128-CTR implementation (more secure)" ON)
+if(NOT USE_OPENSSL_CRYPTO)
+    message(STATUS "Using simple XOR cipher implementation (less secure)")
+else()
+    message(STATUS "Using OpenSSL AES-128-CTR implementation (more secure)")
+endif()
+
 # libuv dependency
 if(USE_SYSTEM_LIBUV)
     # Only find PkgConfig when we need to use system libuv
@@ -149,12 +157,19 @@ set(GATEWAY_SOURCES
     src/connection/websocket_bridge.cpp
     src/utils/config_manager.cpp
     src/utils/logger.cpp
-    src/utils/crypto_utils.cpp
     src/utils/mqtt_auth.cpp
     src/utils/mcp_proxy.cpp
     src/protocol/mqtt_protocol.cpp
     src/protocol/mqtt_packet.cpp
 )
+
+# Choose crypto implementation based on option
+if(USE_OPENSSL_CRYPTO)
+    list(APPEND GATEWAY_SOURCES src/utils/crypto_utils_openssl.cpp)
+    add_compile_definitions(USE_OPENSSL_CRYPTO)
+else()
+    list(APPEND GATEWAY_SOURCES src/utils/crypto_utils.cpp)
+endif()
 
 # Header files
 set(GATEWAY_HEADERS

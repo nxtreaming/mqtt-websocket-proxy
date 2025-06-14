@@ -62,6 +62,34 @@ int MQTTServer::Initialize(const ServerConfig& config) {
     return error::SUCCESS;
 }
 
+int MQTTServer::UpdateConfig(const ServerConfig& config) {
+    LOG_INFO("Updating MQTT server configuration");
+    
+    // Update max connections if changed
+    if (config_.mqtt.max_connections != config.mqtt.max_connections) {
+        LOG_INFO("Updating max connections: " + std::to_string(config.mqtt.max_connections));
+        config_.mqtt.max_connections = config.mqtt.max_connections;
+        // Note: We can't directly update the server's max_connections at runtime
+        // This will be applied to new connections
+    }
+    
+    // Update max payload size if changed
+    if (config_.mqtt.max_payload_size != config.mqtt.max_payload_size) {
+        LOG_INFO("Updating max payload size: " + std::to_string(config.mqtt.max_payload_size));
+        config_.mqtt.max_payload_size = config.mqtt.max_payload_size;
+        // Note: We can't directly update the server's max_payload_size at runtime
+        // This will be applied to new connections
+    }
+    
+    // Update debug level
+    if (config_.debug != config.debug) {
+        config_.debug = config.debug;
+        // Update logging level if needed
+    }
+    
+    return error::SUCCESS;
+}
+
 int MQTTServer::Start() {
     if (running_.load()) {
         LOG_WARN("MQTT server is already running");
@@ -149,6 +177,10 @@ int MQTTServer::ForwardToClient(ConnectionId connection_id, const std::string& t
     }
     
     return it->second->ForwardFromWebSocket(topic, payload);
+}
+
+int MQTTServer::BroadcastMessage(const std::string& topic, const std::string& payload) {
+    return BroadcastToClients(topic, payload);
 }
 
 int MQTTServer::BroadcastToClients(const std::string& topic, const std::string& payload) {
