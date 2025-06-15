@@ -23,6 +23,10 @@
       "11:22:33:44:55:66"
     ]
   },
+  "gateway": {
+    "device_id": "your-gateway-device-id",
+    "client_id": "your-gateway-client-id"
+  },
   "logging": {
     "enabled": true,
     "level": "info",

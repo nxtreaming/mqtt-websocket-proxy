@@ -20,12 +20,12 @@
 #include "server/udp_server.h"
 #include "connection/websocket_bridge.h"
 #include "utils/logger.h"
-#include "utils/crypto_utils.h"
 #include "common/error_codes.h"
+#include "common/constants.h"
+#include <nlohmann/json.hpp>
 
 #include <uv.h>
 #include <libwebsockets.h>
-#include <nlohmann/json.hpp>
 #include <chrono>
 #include <csignal>
 #include <mutex>
@@ -461,7 +461,10 @@ int GatewayServer::InitializeWebSocketBridge() {
         LOG_ERROR("WebSocket error: " + error_message);
     });
 
-    int ret = websocket_bridge_->Initialize(config_, event_loop_.get());
+    std::string device_id = config_.gateway.device_id;
+    std::string client_id = config_.gateway.client_id;
+
+    int ret = websocket_bridge_->InitializeWithDeviceInfo(config_, event_loop_.get(), device_id, client_id, 2, "");
     if (ret != error::SUCCESS) {
         LOG_ERROR("Failed to initialize WebSocket bridge: " + error::GetErrorMessage(ret));
         return ret;
@@ -807,10 +810,39 @@ void GatewayServer::OnWebSocketConnected(const std::string& server_url) {
     // Send initial hello message
     if (websocket_bridge_) {
         nlohmann::json hello_json;
-        hello_json["type"] = "gateway_hello";
-        hello_json["gateway_id"] = "mqtt-websocket-proxy";
-        hello_json["version"] = "1.0.0";
-        hello_json["session_id"] = active_websocket_session_id_;
+        hello_json["type"] = "hello";
+        hello_json["version"] = 2; // Aligned with JS WebSocket client
+        hello_json["transport"] = "websocket";
+
+        // Add features object
+        nlohmann::json features_json;
+#ifdef CONFIG_USE_SERVER_AEC
+        features_json["aec"] = true;
+#else
+        features_json["aec"] = false; // Or omit if false is default
+#endif
+#ifdef CONFIG_IOT_PROTOCOL_MCP
+        features_json["mcp"] = true;
+#else
+        features_json["mcp"] = false; // Or omit if false is default
+#endif
+        hello_json["features"] = features_json;
+
+        // Add audio_params object
+        nlohmann::json audio_params_json;
+        audio_params_json["format"] = "opus";
+        audio_params_json["sample_rate"] = 16000;
+        audio_params_json["channels"] = 1;
+        // Assuming OPUS_FRAME_DURATION_MS is an available constant, e.g., from common/constants.h
+        // If not, this will need to be defined or sourced differently.
+        // For example, if OPUS_FRAME_DURATION_MS is 20:
+        // audio_params_json["frame_duration"] = 20; 
+        // Let's assume it's defined for now:
+        audio_params_json["frame_duration"] = constants::OPUS_FRAME_DURATION_MS; 
+        hello_json["audio_params"] = audio_params_json;
+
+        // hello_json["gateway_id"] = "mqtt-websocket-proxy"; // Kept commented out
+        // hello_json["session_id"] = active_websocket_session_id_; // Kept commented out
         
         websocket_bridge_->SendMessage(hello_json.dump());
     }

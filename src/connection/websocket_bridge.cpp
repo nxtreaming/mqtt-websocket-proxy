@@ -19,9 +19,9 @@
 #include "utils/logger.h"
 #include "common/error_codes.h"
 #include "common/constants.h"
+#include <nlohmann/json.hpp>
 
 #include <libwebsockets.h>
-#include <nlohmann/json.hpp>
 #include <regex>
 #include <chrono>
 #include <sstream>
@@ -145,9 +145,8 @@ int WebSocketBridge::UpdateConfig(const ServerConfig& config) {
 }
 
 int WebSocketBridge::InitializeWithDeviceInfo(const ServerConfig& config, uv_loop_t* loop,
-                                             const std::string& mac_address,
-                                             int protocol_version,
-                                             const std::string& user_data) {
+                                             const std::string& mac_address, const std::string& client_uuid,
+                                             int protocol_version, const std::string& user_data) {
     // Call basic initialization first
     int ret = Initialize(config, loop);
     if (ret != error::SUCCESS) {
@@ -156,6 +155,7 @@ int WebSocketBridge::InitializeWithDeviceInfo(const ServerConfig& config, uv_loo
 
     // Save device information (JavaScript version: constructor(connection, protocolVersion, macAddress, uuid, userData))
     mac_address_ = mac_address;
+    client_uuid_ = client_uuid;
     protocol_version_ = protocol_version;
     user_data_ = user_data;
     device_said_goodbye_ = false;
@@ -233,30 +233,55 @@ int WebSocketBridge::Connect(const std::string& server_url) {
     
     // Add required custom headers for compatibility with JavaScript version
     // Format: "header-name: header-value\r\n"
-    std::string headers;
-    
-    // Add device-id header (MAC address)
-    if (!mac_address_.empty()) {
-        headers += "device-id: " + mac_address_ + "\r\n";
+    // JS sends:
+    // 'device-id': this.macAddress,
+    // 'protocol-version': '2',
+    // 'authorization': `Bearer test-token`
+    // 'client-id': this.uuid (if exists)
+    // 'x-forwarded-for': this.userData.ip (if exists)
+    std::string new_headers_str; // Using a different local variable name to avoid potential conflict
+
+    // device-id (Assuming mac_address_ is a member variable like std::string mac_address_)
+    // Ensure mac_address_ is accessible here (e.g., a member of WebSocketBridge)
+    if (!mac_address_.empty()) { 
+        new_headers_str += "device-id: " + mac_address_ + "\r\n";
+    } else {
+        LOG_WARN("MAC address (for device-id header) is empty. Header not sent.");
     }
-    
-    // Add protocol-version header
-    headers += "protocol-version: " + std::to_string(protocol_version_) + "\r\n";
-    
-    // Add user-data header if available
+
+    // protocol-version
+    new_headers_str += "protocol-version: 2\r\n"; // String "2" is correct
+
+    // authorization
+    new_headers_str += "authorization: Bearer test-token\r\n"; // Matching JS static token
+
+    // client-id (optional, assuming client_uuid_ is a member like std::string client_uuid_)
+    if (!client_uuid_.empty()) {
+        new_headers_str += "client-id: " + client_uuid_ + "\r\n";
+    }
+
+    // x-forwarded-for (optional, from parsed user_data_)
+    std::string client_ip_from_user_data;
+
     if (!user_data_.empty()) {
-        headers += "user-data: " + user_data_ + "\r\n";
+        try {
+            auto user_data_json = nlohmann::json::parse(user_data_);
+            if (user_data_json.contains("ip") && user_data_json["ip"].is_string()) {
+                client_ip_from_user_data = user_data_json["ip"].get<std::string>();
+            }
+        } catch (const nlohmann::json::parse_error& e) {
+            LOG_WARN("Failed to parse user_data as JSON: " + std::string(e.what()) + ". user_data: " + user_data_);
+        }
     }
-    
-    // Add client-type header
-    headers += "client-type: cpp\r\n";
+
+    if (!client_ip_from_user_data.empty()) { 
+        new_headers_str += "x-forwarded-for: " + client_ip_from_user_data + "\r\n";
+    }
     
     // Set headers in connection info
-    if (!headers.empty()) {
-        LOG_DEBUG("Adding WebSocket headers: " + headers);
-        // Store headers for later use with lws_client_connect_via_info
-        // Headers will be set using lws protocol callbacks
-        custom_headers_ = headers;
+    if (!new_headers_str.empty()) {
+        LOG_DEBUG("Adding WebSocket headers: " + new_headers_str);
+        custom_headers_ = new_headers_str; // custom_headers_ is the member that lws uses
     }
     
     if (use_ssl) {

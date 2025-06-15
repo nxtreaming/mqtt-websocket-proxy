@@ -40,7 +40,7 @@ bool test_websocket_connection(const std::string& server_url) {
     
     // Initialize WebSocketBridge with the correct parameters
     uv_loop_t* loop = nullptr;
-    int ret = ws_bridge.InitializeWithDeviceInfo(config, loop, mac_address, protocol_version, user_data);
+    int ret = ws_bridge.InitializeWithDeviceInfo(config, loop, mac_address, "test_client_uuid", protocol_version, user_data);
     if (ret != error::SUCCESS) {
         std::cerr << "Failed to initialize WebSocketBridge: " << ret << std::endl;
         return false;

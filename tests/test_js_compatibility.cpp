@@ -93,7 +93,7 @@ void TestWebSocketBridgeDeviceInfo() {
     int protocol_version = 3;
     std::string user_data = "test-uuid-1234";
     
-    int ret = bridge->InitializeWithDeviceInfo(config, &loop, mac_address, protocol_version, user_data);
+    int ret = bridge->InitializeWithDeviceInfo(config, &loop, mac_address, "test_js_client_uuid", protocol_version, user_data);
     assert(ret == error::SUCCESS);
     
     std::cout << "WebSocket bridge device info test passed" << std::endl;

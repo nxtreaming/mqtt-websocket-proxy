@@ -436,9 +436,10 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
         std::string user_data = credentials_.uuid; // Use UUID as user data
 
         int ret = websocket_bridge_->InitializeWithDeviceInfo(config_, loop_,
-                                                             mac_address,
-                                                             protocol_version,
-                                                             user_data);
+                                                             mac_address, // device_id
+                                                             credentials_.uuid, // client_uuid
+                                                             protocol_version, // protocol_version
+                                                             user_data); // user_data
         if (ret != error::SUCCESS) {
             LOG_ERROR("Failed to initialize WebSocket bridge: " + error::GetErrorMessage(ret));
             Close();

@@ -108,7 +108,7 @@ struct UDPConnectionInfo {
  * @brief UDP session information
  */
 struct UDPSessionInfo {
-    std::string session_id;
+    SessionId session_id;
     ConnectionId connection_id = 0;
     std::string remote_address;
     uint16_t remote_port = 0;
@@ -197,6 +197,11 @@ struct ServerConfig {
         std::vector<std::string> production_servers;
         std::vector<MacAddress> development_mac_addresses;
     } websocket;
+
+    struct {
+        std::string device_id;
+        std::string client_id;
+    } gateway;
 
     struct {
         bool enabled = false;

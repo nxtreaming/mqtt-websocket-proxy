@@ -63,14 +63,14 @@ public:
      * @param config Server configuration
      * @param loop Event loop
      * @param mac_address Device MAC address for server selection
+     * @param client_uuid Client UUID for proper gateway identification
      * @param protocol_version Protocol version
      * @param user_data User data (optional)
      * @return Error code, 0 indicates success
      */
     int InitializeWithDeviceInfo(const ServerConfig& config, uv_loop_t* loop,
-                                const std::string& mac_address,
-                                int protocol_version = 3,
-                                const std::string& user_data = "");
+                                const std::string& mac_address, const std::string& client_uuid,
+                                int protocol_version = 3, const std::string& user_data = "");
 
     /**
      * @brief Connect to WebSocket server
@@ -264,6 +264,7 @@ private:
 
     // Device information (JavaScript version compatible)
     std::string mac_address_;
+    std::string client_uuid_;
     int protocol_version_;
     std::string user_data_;
     std::string custom_headers_;

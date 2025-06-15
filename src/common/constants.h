@@ -25,6 +25,9 @@ constexpr uint32_t WEBSOCKET_CONNECT_TIMEOUT_MS = 10000;  // 10 seconds
 constexpr uint32_t WEBSOCKET_PING_INTERVAL_MS = 30000;    // 30 seconds
 constexpr uint32_t WEBSOCKET_MAX_MESSAGE_SIZE = 1024 * 1024;  // 1MB
 
+// Opus audio constants
+constexpr uint32_t OPUS_FRAME_DURATION_MS = 60;
+
 // Encryption constants
 constexpr uint32_t AES_KEY_SIZE = 16;  // AES-128
 constexpr uint32_t AES_BLOCK_SIZE = 16;
