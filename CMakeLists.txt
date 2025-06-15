@@ -73,9 +73,18 @@ endif()
 
 # libuv dependency
 if(USE_SYSTEM_LIBUV)
-    # Only find PkgConfig when we need to use system libuv
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LIBUV REQUIRED libuv)
+    find_package(LibUV REQUIRED)
+    # LibUV_FOUND, LibUV_INCLUDE_DIRS, LibUV_LIBRARIES should be set by FindLibUV.cmake
+    # Modern CMake might provide an imported target like LibUV::LibUV
+    if(TARGET LibUV::LibUV)
+        set(LIBUV_LIBRARIES LibUV::LibUV)
+        # Include dirs are often handled by the target itself, but can be explicit if needed
+        set(LIBUV_INCLUDE_DIRS ${LibUV_INCLUDE_DIRS}) 
+    else()
+        # Fallback to traditional variables if imported target not available
+        # Ensure LIBUV_LIBRARIES and LIBUV_INCLUDE_DIRS are correctly populated by FindLibUV
+    endif()
+    message(STATUS "Using system libuv: ${LIBUV_LIBRARIES} include: ${LIBUV_INCLUDE_DIRS}")
 else()
     # Use built-in libuv
     set(LIBUV_BUILD_TESTS OFF CACHE BOOL "Build libuv tests")
@@ -87,6 +96,20 @@ endif()
 # libwebsockets dependency
 if(USE_SYSTEM_LIBWEBSOCKETS)
     find_package(Libwebsockets REQUIRED)
+    # Check for common imported target names (actual name might vary based on FindLibwebsockets.cmake)
+    if(TARGET Libwebsockets::libwebsockets)
+        set(LIBWEBSOCKETS_LIBRARIES Libwebsockets::libwebsockets)
+        set(LIBWEBSOCKETS_INCLUDE_DIRS "") # Assume target handles includes
+    elseif(TARGET Libwebsockets::websockets)
+        set(LIBWEBSOCKETS_LIBRARIES Libwebsockets::websockets)
+        set(LIBWEBSOCKETS_INCLUDE_DIRS "") # Assume target handles includes
+    else()
+        # Fallback to traditional variables if no common imported target found
+        # Ensure Libwebsockets_LIBRARIES and Libwebsockets_INCLUDE_DIRS are correctly populated by FindLibwebsockets.cmake
+        set(LIBWEBSOCKETS_LIBRARIES ${Libwebsockets_LIBRARIES})
+        set(LIBWEBSOCKETS_INCLUDE_DIRS ${Libwebsockets_INCLUDE_DIRS})
+    endif()
+    message(STATUS "Using system libwebsockets: ${LIBWEBSOCKETS_LIBRARIES} include: ${LIBWEBSOCKETS_INCLUDE_DIRS}")
 else()
     # Use built-in libwebsockets
     set(LWS_WITH_SSL ON CACHE BOOL "Enable SSL support")
@@ -194,12 +217,39 @@ set(GATEWAY_HEADERS
 add_library(xiaozhi-mqtt-core STATIC ${GATEWAY_SOURCES} ${GATEWAY_HEADERS})
 
 # Set include directories for the library
+# Consolidate include directories. 
+# For system libraries found via find_package, if they provide imported targets,
+# their include directories are often handled automatically when linking against the target.
+# For bundled libraries, we specify them directly.
+
 target_include_directories(xiaozhi-mqtt-core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
-    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libwebsockets/include
-    ${CMAKE_CURRENT_BINARY_DIR}/third_party/libwebsockets/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party # General third_party includes if any
+    ${JSON_INCLUDE_DIRS} # nlohmann_json
 )
+
+# Add include directories based on how dependencies are resolved
+if(USE_SYSTEM_LIBUV AND LibUV_FOUND)
+    if(NOT TARGET LibUV::LibUV) # If not using imported target, add include dirs manually
+        target_include_directories(xiaozhi-mqtt-core PUBLIC ${LIBUV_INCLUDE_DIRS})
+    endif()
+else()
+    target_include_directories(xiaozhi-mqtt-core PUBLIC ${CMAKE_SOURCE_DIR}/third_party/libuv/include) # Bundled libuv
+endif()
+
+if(USE_SYSTEM_LIBWEBSOCKETS AND LIBWEBSOCKETS_FOUND)
+    if(NOT TARGET Libwebsockets::libwebsockets) # Example imported target name
+         target_include_directories(xiaozhi-mqtt-core PUBLIC ${LIBWEBSOCKETS_INCLUDE_DIRS})
+    endif()
+else()
+    target_include_directories(xiaozhi-mqtt-core PUBLIC 
+        ${CMAKE_SOURCE_DIR}/third_party/libwebsockets/include 
+        ${CMAKE_BINARY_DIR}/third_party/libwebsockets/include # For generated lws_config.h
+    )
+endif()
+
+# OpenSSL include directories (FindOpenSSL.cmake sets OpenSSL_INCLUDE_DIR)
+target_include_directories(xiaozhi-mqtt-core PUBLIC ${OpenSSL_INCLUDE_DIR})
 
 # Add specific link directories for xiaozhi-mqtt-core
 target_link_directories(xiaozhi-mqtt-core PRIVATE
@@ -207,17 +257,40 @@ target_link_directories(xiaozhi-mqtt-core PRIVATE
 )
 
 # Link dependencies to the core library
-target_link_libraries(xiaozhi-mqtt-core PUBLIC
-    ${LIBUV_LIBRARIES}
-    websockets
-    ${OPENSSL_LIBRARIES}
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    $<$<PLATFORM_ID:Windows>:crypt32.lib>
-    $<$<PLATFORM_ID:Windows>:ws2_32>
-    $<$<PLATFORM_ID:Windows>:iphlpapi>
-    $<$<PLATFORM_ID:Windows>:userenv>
-)
+# Link libraries
+# Prefer modern CMake imported targets where available
+if(TARGET OpenSSL::SSL AND TARGET OpenSSL::Crypto)
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+else()
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC ${OpenSSL_LIBRARIES}) # Fallback to older variable
+endif()
+
+if(USE_SYSTEM_LIBUV AND LibUV_FOUND)
+    if(TARGET LibUV::LibUV)
+        target_link_libraries(xiaozhi-mqtt-core PUBLIC LibUV::LibUV)
+    else()
+        target_link_libraries(xiaozhi-mqtt-core PUBLIC ${LIBUV_LIBRARIES})
+    endif()
+else()
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC uv_a) # Bundled libuv target name
+endif()
+
+if(USE_SYSTEM_LIBWEBSOCKETS AND LIBWEBSOCKETS_FOUND)
+    # Assuming LIBWEBSOCKETS_LIBRARIES is set to the target name or library path by find_package/pkg_check_modules
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC ${LIBWEBSOCKETS_LIBRARIES})
+else()
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC websockets_static) # Bundled libwebsockets target name
+endif()
+
+# Add Windows-specific system libraries
+if(WIN32)
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC
+        ws2_32      # Winsock
+        iphlpapi    # IP Helper API (for network adapter info, etc.)
+        crypt32     # Cryptographic API (often needed by OpenSSL or for system certs)
+        userenv     # User Profile (sometimes needed for path lookups)
+    )
+endif()
 
 # Set properties for the library
 set_target_properties(xiaozhi-mqtt-core PROPERTIES
