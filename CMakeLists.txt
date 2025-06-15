@@ -160,7 +160,7 @@ else()
     set(CMAKE_C_FLAGS ${SAVED_CMAKE_C_FLAGS})
     set(CMAKE_CXX_FLAGS ${SAVED_CMAKE_CXX_FLAGS})
 
-    set(LIBWEBSOCKETS_LIBRARIES websockets_static)
+    set(LIBWEBSOCKETS_LIBRARIES websockets) # Use the CMake target name
     set(LIBWEBSOCKETS_INCLUDE_DIRS
         ${CMAKE_SOURCE_DIR}/third_party/libwebsockets/include
         ${CMAKE_BINARY_DIR}/third_party/libwebsockets)
@@ -278,8 +278,8 @@ endif()
 if(USE_SYSTEM_LIBWEBSOCKETS AND LIBWEBSOCKETS_FOUND)
     # Assuming LIBWEBSOCKETS_LIBRARIES is set to the target name or library path by find_package/pkg_check_modules
     target_link_libraries(xiaozhi-mqtt-core PUBLIC ${LIBWEBSOCKETS_LIBRARIES})
-else()
-    target_link_libraries(xiaozhi-mqtt-core PUBLIC websockets_static) # Bundled libwebsockets target name
+else() # USE_SYSTEM_LIBWEBSOCKETS is OFF
+    target_link_libraries(xiaozhi-mqtt-core PUBLIC websockets) # Link against the CMake target 'websockets'
 endif()
 
 # Add Windows-specific system libraries

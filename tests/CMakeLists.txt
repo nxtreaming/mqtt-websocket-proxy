@@ -23,9 +23,6 @@ include_directories(${CMAKE_SOURCE_DIR}/third_party)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/libwebsockets/include)
 include_directories(${CMAKE_BINARY_DIR}/third_party/libwebsockets/include)
 
-# Ensure core libraries can be found
-link_directories(${CMAKE_BINARY_DIR}/lib)
-
 # Common test dependencies
 set(COMMON_TEST_LIBS
     xiaozhi-mqtt-core # Main dependency on core library
