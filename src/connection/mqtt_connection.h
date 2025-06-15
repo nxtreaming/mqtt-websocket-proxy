@@ -10,6 +10,10 @@
 #include <memory>
 #include <functional>
 #include <chrono>
+#include <vector>
+#include <mutex>
+#include <deque>
+#include <memory> // For std::unique_ptr
 
 namespace xiaozhi {
 
@@ -260,6 +264,20 @@ private:
     
     // Buffer for reading
     std::vector<uint8_t> read_buffer_;
+
+    // Structure to hold write request context
+    struct WriteRequestContext {
+        uv_write_t req;
+        std::vector<uint8_t> buffer;
+    };
+
+    // Pool for write requests
+    std::deque<std::unique_ptr<WriteRequestContext>> write_req_pool_;
+    std::mutex write_req_pool_mutex_;
+
+    // Helper methods for pool management
+    std::unique_ptr<WriteRequestContext> AcquireWriteRequestContext();
+    void ReleaseWriteRequestContext(std::unique_ptr<WriteRequestContext> context);
     
     // Disable copy
     MQTTConnection(const MQTTConnection&) = delete;

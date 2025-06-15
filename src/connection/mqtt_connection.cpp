@@ -51,6 +51,31 @@ MQTTConnection::MQTTConnection(ConnectionId connection_id, uv_tcp_t* tcp_handle,
 
 MQTTConnection::~MQTTConnection() {
     Stop();
+    // Clear the pool, deleting all contexts
+    std::lock_guard<std::mutex> lock(write_req_pool_mutex_);
+    write_req_pool_.clear();
+}
+
+std::unique_ptr<MQTTConnection::WriteRequestContext> MQTTConnection::AcquireWriteRequestContext() {
+    std::lock_guard<std::mutex> lock(write_req_pool_mutex_);
+    if (!write_req_pool_.empty()) {
+        std::unique_ptr<WriteRequestContext> context = std::move(write_req_pool_.front());
+        write_req_pool_.pop_front();
+        // LOG_DEBUG("Acquired context from pool. Pool size: " + std::to_string(write_req_pool_.size()));
+        return context;
+    }
+    // Pool is empty, create a new one
+    // LOG_DEBUG("Pool empty, creating new context.");
+    return std::make_unique<WriteRequestContext>();
+}
+
+void MQTTConnection::ReleaseWriteRequestContext(std::unique_ptr<WriteRequestContext> context) {
+    std::lock_guard<std::mutex> lock(write_req_pool_mutex_);
+    // Optional: Clear buffer to free memory if desired, or cap pool size
+    // context->buffer.clear(); 
+    // context->buffer.shrink_to_fit(); // Can be expensive
+    write_req_pool_.push_back(std::move(context));
+    // LOG_DEBUG("Released context to pool. Pool size: " + std::to_string(write_req_pool_.size()));
 }
 
 int MQTTConnection::Initialize() {
@@ -128,36 +153,39 @@ void MQTTConnection::Stop() {
 }
 
 int MQTTConnection::SendData(const uint8_t* data, size_t length) {
-    if (!active_ || !data || length == 0) {
+    if (!active_ || closing_ || !data || length == 0) { // Added closing_ check
         return error::INVALID_PARAMETER;
     }
+
+    std::unique_ptr<WriteRequestContext> context = AcquireWriteRequestContext();
     
-    // Allocate write request
-    auto write_req = std::make_unique<uv_write_t>();
+    // Copy data into the context's buffer
+    context->buffer.assign(data, data + length);
 
-    // Allocate buffer (will be freed in write callback)
-    auto buffer_data = std::make_unique<uint8_t[]>(length);
-    std::memcpy(buffer_data.get(), data, length);
+    // Set up libuv write request
+    context->req.data = context.get(); // Pass raw pointer to context for the callback
 
-    // Store both connection and buffer pointer in request data for cleanup
-    struct WriteData {
-        MQTTConnection* connection;
-        uint8_t* buffer;
-    };
-    auto write_data = new WriteData{this, buffer_data.release()};
-    write_req->data = write_data;
-
-    uv_buf_t buffer = uv_buf_init(reinterpret_cast<char*>(write_data->buffer), (unsigned int)length);
+    uv_buf_t buffer_uv = uv_buf_init(reinterpret_cast<char*>(context->buffer.data()), (unsigned int)context->buffer.size());
     
-    int ret = uv_write(write_req.release(), reinterpret_cast<uv_stream_t*>(tcp_handle_), 
-                       &buffer, 1, OnWrite);
+    WriteRequestContext* raw_context_ptr = context.get(); // Get raw pointer before potentially releasing unique_ptr
+
+    int ret = uv_write(&raw_context_ptr->req, // Pass address of uv_write_t member
+                       reinterpret_cast<uv_stream_t*>(tcp_handle_),
+                       &buffer_uv, 1, OnWrite);
+    
     if (ret != 0) {
         LOG_ERROR("Failed to write to connection " + std::to_string(connection_id_) + 
                   ": " + std::string(uv_strerror(ret)));
-        delete[] buffer.base; // Clean up on error
+        // If write failed, the context was not passed to libuv, so return it to the pool.
+        ReleaseWriteRequestContext(std::move(context)); 
         return error::SEND_FAILED;
     }
     
+    // If uv_write succeeded, libuv now "owns" the request structure (not the memory pointed by context->req.data).
+    // We release the unique_ptr's ownership of the WriteRequestContext object.
+    // The OnWrite callback will be responsible for taking ownership back and managing it.
+    context.release(); 
+
     return error::SUCCESS;
 }
 
@@ -890,27 +918,39 @@ void MQTTConnection::OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* 
 }
 
 void MQTTConnection::OnWrite(uv_write_t* req, int status) {
-    // Clean up the buffer and connection data
-    struct WriteData {
-        MQTTConnection* connection;
-        uint8_t* buffer;
-    };
+    // Retrieve the WriteRequestContext pointer
+    WriteRequestContext* context_raw_ptr = static_cast<WriteRequestContext*>(req->data);
+    // Take back ownership of the context with a unique_ptr to ensure it's properly deleted if not returned to pool
+    std::unique_ptr<WriteRequestContext> context_owner = std::unique_ptr<WriteRequestContext>(context_raw_ptr);
 
-    WriteData* write_data = static_cast<WriteData*>(req->data);
-    if (write_data) {
-        if (write_data->buffer) {
-            delete[] write_data->buffer;
-        }
-
-        if (status != 0) {
-            LOG_ERROR("Write error on connection " + std::to_string(write_data->connection->connection_id_) +
-                      ": " + std::string(uv_strerror(status)));
-            write_data->connection->Stop();
-        }
-
-        delete write_data;
+    MQTTConnection* connection = nullptr;
+    // req->handle should be the tcp_handle_ associated with this write
+    if (req->handle && req->handle->data) { 
+        connection = static_cast<MQTTConnection*>(req->handle->data);
     }
-    delete req;
+
+    if (status != 0) {
+        LOG_ERROR("Write callback error for connection " + 
+                  (connection ? std::to_string(connection->connection_id_) : "UNKNOWN") +
+                  ": " + std::string(uv_strerror(status)) +
+                  (status == UV_ECANCELED ? " (UV_ECANCELED - connection likely closing)" : ""));
+    }
+    
+    if (connection && !connection->closing_) { 
+        // Only return to pool if connection is valid and not closing
+        connection->ReleaseWriteRequestContext(std::move(context_owner));
+    } else {
+        // If connection is closing, not found, or handle data is null, 
+        // the context_owner unique_ptr will delete the WriteRequestContext when it goes out of scope.
+        // This prevents trying to access a potentially destructed pool or mutex.
+        if (connection && connection->closing_) {
+            // LOG_DEBUG("Write completed for a closing connection " + std::to_string(connection->connection_id_) + ". Context deleted.");
+        } else if (!connection) {
+            LOG_WARN("MQTTConnection instance not found (req->handle->data was null or req->handle was null) in OnWrite. WriteRequestContext deleted to prevent leak.");
+        }
+        // If connection is !nullptr but closing_ is true, context_owner dtor handles deletion.
+    }
+    // No need to delete req itself, as it's part of WriteRequestContext which is managed by unique_ptr
 }
 
 void MQTTConnection::OnClose(uv_handle_t* handle) {
