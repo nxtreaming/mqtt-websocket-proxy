@@ -297,6 +297,10 @@ private:
 
     // Reconnection timer
     std::unique_ptr<uv_timer_t> reconnection_timer_;
+
+    // Preallocated buffer for sending messages
+    std::vector<unsigned char> preallocated_send_buffer_;
+
     uv_loop_t* event_loop_;
 
     // Callbacks

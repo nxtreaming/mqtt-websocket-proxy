@@ -55,6 +55,10 @@ WebSocketBridge::WebSocketBridge()
     , reconnecting_(false)
     , current_server_index_(0)
     , event_loop_(nullptr) {
+    // Initialize preallocated send buffer with a default capacity.
+    // LWS_PRE is padding required by libwebsockets.
+    // Assuming constants::WEBSOCKET_MAX_MESSAGE_SIZE is defined appropriately.
+    preallocated_send_buffer_.reserve(LWS_PRE + constants::WEBSOCKET_MAX_MESSAGE_SIZE);
 }
 
 WebSocketBridge::~WebSocketBridge() {
@@ -502,13 +506,21 @@ void WebSocketBridge::ProcessSendQueue() {
     std::string message = send_queue_.front();
     send_queue_.pop();
     
-    // Prepare message for sending
+    // Prepare message for sending using preallocated buffer
     size_t message_len = message.length();
-    std::vector<unsigned char> buffer(LWS_PRE + message_len);
+    size_t required_size = LWS_PRE + message_len;
+
+    // Ensure buffer has enough capacity. 
+    // resize will reallocate if capacity is insufficient and current size is smaller.
+    // Explicitly reserve if a larger capacity is needed beyond the current message to avoid frequent reallocations.
+    if (preallocated_send_buffer_.capacity() < required_size) {
+        preallocated_send_buffer_.reserve(required_size); 
+    }
+    preallocated_send_buffer_.resize(required_size); // Set the current size of the buffer for lws_write
     
-    memcpy(&buffer[LWS_PRE], message.c_str(), message_len);
+    memcpy(preallocated_send_buffer_.data() + LWS_PRE, message.c_str(), message_len);
     
-    int ret = lws_write(websocket_, &buffer[LWS_PRE], message_len, LWS_WRITE_TEXT);
+    int ret = lws_write(websocket_, preallocated_send_buffer_.data() + LWS_PRE, message_len, LWS_WRITE_TEXT);
     if (ret < 0) {
         LOG_ERROR("Failed to send WebSocket message");
         OnError("Failed to send message");
