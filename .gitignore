@@ -4,6 +4,7 @@ node_modules/
 build/
 dist/
 package-lock.json
-third_party/
+third_party/*
+!third_party/README.md
 mqtt_opt.md
 local_dev/
