@@ -379,9 +379,6 @@ void MQTTConnection::OnMQTTPublish(const MQTTPublishPacket& packet) {
 
     LOG_DEBUG("MQTT PUBLISH from " + client_id_ + ": topic=" + packet.GetTopic());
 
-    // Forward the message directly to the WebSocket bridge
-    ForwardMqttMessageToWebSocket(packet.GetTopic(), packet.GetPayload());
-
     // JavaScript version: if (publishData.qos !== 0) { this.close(); return; }
     if (packet.GetQoS() != 0) {
         LOG_WARN("Unsupported QoS level: " + std::to_string(packet.GetQoS()) + ", closing connection");
@@ -409,7 +406,6 @@ void MQTTConnection::OnMQTTPublish(const MQTTPublishPacket& packet) {
                 // Handle hello message (JavaScript version: this.parseHelloMessage(json))
                 ParseHelloMessage(json);
                 return;
-
             } else if (message_type == "mcp") {
                 // Process MCP message
                 if (mcp_proxy_) {
@@ -422,7 +418,6 @@ void MQTTConnection::OnMQTTPublish(const MQTTPublishPacket& packet) {
                     }
                 }
                 return; // MCP messages are not forwarded to WebSocket
-
             } else {
                 // Other message types (JavaScript version: this.parseOtherMessage(json))
                 ParseOtherMessage(json);
