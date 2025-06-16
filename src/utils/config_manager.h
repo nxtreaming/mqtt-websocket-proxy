@@ -16,7 +16,6 @@
 #include <unistd.h>
 #endif
 
-// Include nlohmann/json directly to avoid symbol conflicts
 #include <nlohmann/json.hpp>
 
 namespace xiaozhi {

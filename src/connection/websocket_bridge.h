@@ -11,7 +11,6 @@
 #include <queue>
 #include <mutex>
 
-// Forward declarations
 struct lws_context;
 struct lws;
 struct lws_protocols;

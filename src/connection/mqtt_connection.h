@@ -16,9 +16,6 @@
 
 namespace xiaozhi {
 
-// Forward declaration
-class WebSocketBridge;
-
 /**
  * @brief MQTT connection handler for gateway forwarding
  * 

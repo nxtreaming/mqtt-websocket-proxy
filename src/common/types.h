@@ -47,7 +47,6 @@ using ErrorCallback = std::function<void(int error_code, const std::string& mess
 using DataCallback = std::function<void(const std::vector<uint8_t>& data)>;
 using MessageCallback = std::function<void(const std::string& message)>;
 
-// MQTT related structures
 struct MQTTConnectInfo {
     std::string client_id;
     std::string username;
@@ -72,8 +71,6 @@ struct MQTTSubscribeInfo {
     uint8_t qos = 0;
     uint16_t packet_id = 0;
 };
-
-// UDP related structures
 
 /**
  * @brief UDP packet types

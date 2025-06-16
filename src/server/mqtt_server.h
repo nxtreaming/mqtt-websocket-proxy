@@ -8,11 +8,10 @@
 #include <unordered_map>
 #include <functional>
 #include <atomic>
-namespace xiaozhi {
-class MQTTConnection;
-}
 
 namespace xiaozhi {
+
+class MQTTConnection;
 
 /**
  * @brief MQTT TCP server for gateway

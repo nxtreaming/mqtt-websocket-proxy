@@ -32,7 +32,7 @@ int MQTTProtocol::ProcessData(const uint8_t* data, size_t length) {
 }
 
 int MQTTProtocol::ProcessBuffer() {
-    while (receive_buffer_.size() >= 2) { // Minimum packet size
+    while (receive_buffer_.size() >= 2) {
         size_t offset = 0;
         MQTTPacketType packet_type;
         uint32_t remaining_length;

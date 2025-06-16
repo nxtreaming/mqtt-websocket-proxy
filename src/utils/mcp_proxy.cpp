@@ -6,7 +6,6 @@
 namespace xiaozhi {
 namespace mcp {
 
-// MCPTool implementation
 MCPTool MCPTool::FromJson(const nlohmann::json& json) {
     MCPTool tool;
     
@@ -33,7 +32,6 @@ nlohmann::json MCPTool::ToJson() const {
     return json;
 }
 
-// MCPProxy implementation
 MCPProxy::MCPProxy() = default;
 
 MCPProxy::~MCPProxy() = default;
