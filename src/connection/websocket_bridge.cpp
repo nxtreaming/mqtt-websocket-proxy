@@ -24,6 +24,16 @@ static const struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 } // terminator
 };
 
+WebSocketBridge::WebSocketBridge(int protocol_version, std::string mac_address, std::string uuid, std::string user_data)
+    : protocol_version_(protocol_version),
+      mac_address_(std::move(mac_address)),
+      uuid_(std::move(uuid)),
+      user_data_(std::move(user_data))
+{
+    // This constructor is for initialization with client details.
+    // The default constructor can be used for other cases.
+}
+
 WebSocketBridge::WebSocketBridge()
     : connected_(false)
     , context_(nullptr)
@@ -74,13 +84,31 @@ int WebSocketBridge::Initialize(const ServerConfig& config, uv_loop_t* loop) {
         return error::WEBSOCKET_ERROR;
     }
 
-    // Set default server list from config
+    // Select server list based on MAC address for JS compatibility
     std::vector<std::string> servers;
-    if (config_.debug) {
+    bool is_development = false;
+    if (!mac_address_.empty()) {
+        const auto& dev_mac_addresses = config_.websocket.development_mac_addresses;
+        for (const auto& dev_mac : dev_mac_addresses) {
+            if (dev_mac == mac_address_) {
+                is_development = true;
+                break;
+            }
+        }
+    }
+
+    if (is_development) {
         servers = config_.websocket.development_servers;
+        LOG_INFO("Using development servers for MAC: " + mac_address_);
     } else {
         servers = config_.websocket.production_servers;
+        LOG_INFO("Using production servers for MAC: " + mac_address_);
     }
+
+    if (servers.empty()) {
+        LOG_WARN("No WebSocket servers configured for MAC address: " + mac_address_ + (is_development ? " (development)" : " (production)"));
+    }
+
     SetServerList(servers);
 
     // Enable reconnection by default
@@ -131,60 +159,7 @@ int WebSocketBridge::UpdateConfig(const ServerConfig& config) {
     return error::SUCCESS;
 }
 
-int WebSocketBridge::InitializeWithDeviceInfo(const ServerConfig& config, uv_loop_t* loop,
-                                             const std::string& mac_address, const std::string& client_uuid,
-                                             int protocol_version, const std::string& user_data) {
-    // Call basic initialization first
-    int ret = Initialize(config, loop);
-    if (ret != error::SUCCESS) {
-        return ret;
-    }
 
-    // Save device information (JavaScript version: constructor(connection, protocolVersion, macAddress, uuid, userData))
-    mac_address_ = mac_address;
-    client_uuid_ = client_uuid;
-    protocol_version_ = protocol_version;
-    user_data_ = user_data;
-    device_said_goodbye_ = false;
-
-    // JavaScript version: initializeChatServer()
-    std::vector<std::string> chat_servers;
-
-    // JavaScript version: const devMacAddresss = configManager.get('development')?.mac_addresss || [];
-    const auto& dev_mac_addresses = config_.websocket.development_mac_addresses;
-
-    // JavaScript version: if (devMacAddresss.includes(this.macAddress))
-    bool is_development = false;
-    for (const auto& dev_mac : dev_mac_addresses) {
-        if (dev_mac == mac_address_) {
-            is_development = true;
-            break;
-        }
-    }
-
-    // Select server list (JavaScript version: chatServers = configManager.get('development/production')?.chat_servers)
-    if (is_development) {
-        chat_servers = config_.websocket.development_servers;
-        LOG_INFO("Using development servers for MAC: " + mac_address_);
-    } else {
-        chat_servers = config_.websocket.production_servers;
-        LOG_INFO("Using production servers for MAC: " + mac_address_);
-    }
-
-    if (chat_servers.empty()) {
-        LOG_ERROR("No chat servers found for MAC address: " + mac_address_);
-        return error::CONFIG_MISSING_REQUIRED;
-    }
-
-    // Set server list
-    SetServerList(chat_servers);
-
-    LOG_INFO("WebSocket bridge initialized with device info: MAC=" + mac_address_ +
-             ", protocol=" + std::to_string(protocol_version_) +
-             ", servers=" + std::to_string(chat_servers.size()));
-
-    return error::SUCCESS;
-}
 
 int WebSocketBridge::Connect(const std::string& server_url, const std::map<std::string, std::string>& headers) {
     if (connected_.load()) {

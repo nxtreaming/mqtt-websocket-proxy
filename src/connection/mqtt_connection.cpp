@@ -468,20 +468,20 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
             }
         }
 
-        // Create WebSocket bridge (JavaScript version: this.bridge = new WebSocketBridge(...))
-        websocket_bridge_ = std::make_unique<WebSocketBridge>();
-
-        // Initialize WebSocket bridge, passing authentication info
-        // JavaScript version: new WebSocketBridge(this, json.version, this.macAddress, this.uuid, this.userData)
+        // Get protocol version from hello message
         int protocol_version = json.value("version", 3);
-        std::string mac_address = credentials_.mac_address;
-        std::string user_data = credentials_.uuid; // Use UUID as user data
 
-        int ret = websocket_bridge_->InitializeWithDeviceInfo(config_, loop_,
-                                                             mac_address, // device_id
-                                                             credentials_.uuid, // client_uuid
-                                                             protocol_version, // protocol_version
-                                                             user_data); // user_data
+        // Create and initialize WebSocket bridge with authentication details
+        // This aligns with the JavaScript version: new WebSocketBridge(this, json.version, this.macAddress, this.uuid, this.userData)
+        websocket_bridge_ = std::make_unique<WebSocketBridge>(
+            protocol_version,
+            credentials_.mac_address,
+            credentials_.uuid,
+            credentials_.user_data
+        );
+
+        // Initialize the bridge with the server configuration and event loop
+        int ret = websocket_bridge_->Initialize(config_, loop_);
         if (ret != error::SUCCESS) {
             LOG_ERROR("Failed to initialize WebSocket bridge: " + error::GetErrorMessage(ret));
             Close();

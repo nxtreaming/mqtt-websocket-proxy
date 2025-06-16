@@ -27,20 +27,19 @@ void signal_handler(int signal) {
 bool test_websocket_connection(const std::string& server_url) {
     std::cout << "Testing WebSocket connection to " << server_url << std::endl;
     
-    // Initialize WebSocketBridge with custom headers
-    WebSocketBridge ws_bridge;
-    ServerConfig config;
-    // Use websocket.development_servers to store the server URL
-    config.websocket.development_servers.push_back(server_url);
-    
-    // Set device info with custom headers
+    // Set device info
     std::string mac_address = "00:11:22:33:44:55";
+    std::string uuid = "test_client_uuid";
     int protocol_version = 3;
     std::string user_data = "{\"test\":\"integration\"}";
-    
-    // Initialize WebSocketBridge with the correct parameters
+
+    // Initialize WebSocketBridge with device info
+    WebSocketBridge ws_bridge(protocol_version, mac_address, uuid, user_data);
+    ServerConfig config;
+    config.websocket.production_servers.push_back(server_url); // Use production servers for testing
+
     uv_loop_t* loop = nullptr;
-    int ret = ws_bridge.InitializeWithDeviceInfo(config, loop, mac_address, "test_client_uuid", protocol_version, user_data);
+    int ret = ws_bridge.Initialize(config, loop);
     if (ret != error::SUCCESS) {
         std::cerr << "Failed to initialize WebSocketBridge: " << ret << std::endl;
         return false;

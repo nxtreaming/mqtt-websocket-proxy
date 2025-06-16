@@ -85,15 +85,16 @@ void TestWebSocketBridgeDeviceInfo() {
     uv_loop_t loop;
     uv_loop_init(&loop);
 
-    // Create WebSocket bridge
-    auto bridge = std::make_unique<WebSocketBridge>();
-
     // Test device info initialization (JavaScript version compatible)
     std::string mac_address = "00:11:22:33:44:55";
+    std::string uuid = "test_js_client_uuid";
     int protocol_version = 3;
     std::string user_data = "test-uuid-1234";
-    
-    int ret = bridge->InitializeWithDeviceInfo(config, &loop, mac_address, "test_js_client_uuid", protocol_version, user_data);
+
+    // Create WebSocket bridge with device info
+    auto bridge = std::make_unique<WebSocketBridge>(protocol_version, mac_address, uuid, user_data);
+
+    int ret = bridge->Initialize(config, &loop);
     assert(ret == error::SUCCESS);
     
     std::cout << "WebSocket bridge device info test passed" << std::endl;
