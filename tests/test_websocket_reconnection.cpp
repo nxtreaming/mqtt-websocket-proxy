@@ -166,7 +166,7 @@ int main() {
         
         // Start initial connection
         std::cout << "Starting initial connection..." << std::endl;
-        ret = websocket_bridge.Connect(config.websocket.development_servers[0]);
+        ret = websocket_bridge.Connect(config.websocket.development_servers[0], {});
         if (ret != error::SUCCESS) {
             std::cout << " Initial connection failed, but reconnection will be attempted" << std::endl;
         }

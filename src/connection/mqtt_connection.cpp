@@ -441,6 +441,33 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
     LOG_INFO("Processing hello message from " + client_id_);
 
     try {
+        // Extract WebSocket URL and Headers from the MQTT 'hello' message
+        std::string ws_url;
+        try {
+            ws_url = json.at("url").get<std::string>();
+        } catch (const nlohmann::json::out_of_range& e) {
+            LOG_ERROR("MQTT 'hello' message is missing 'url' field. Client: " + client_id_ + ", Error: " + e.what());
+            Close();
+            return;
+        } catch (const nlohmann::json::type_error& e) {
+            LOG_ERROR("MQTT 'hello' message 'url' field is not a string. Client: " + client_id_ + ", Error: " + e.what());
+            Close();
+            return;
+        }
+
+        std::map<std::string, std::string> ws_headers;
+        if (json.contains("headers")) {
+            if (json["headers"].is_object()) {
+                try {
+                    ws_headers = json["headers"].get<std::map<std::string, std::string>>();
+                } catch (const nlohmann::json::type_error& e) {
+                    LOG_WARN("MQTT 'hello' message 'headers' field is not a valid key-value map. Ignoring headers. Client: " + client_id_ + ", Error: " + e.what());
+                }
+            } else {
+                LOG_WARN("MQTT 'hello' message 'headers' field is present but not an object. Ignoring headers. Client: " + client_id_);
+            }
+        }
+
         // Create WebSocket bridge (JavaScript version: this.bridge = new WebSocketBridge(...))
         websocket_bridge_ = std::make_unique<WebSocketBridge>();
 
@@ -532,21 +559,11 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
             }
         });
 
-        // Connect to WebSocket server (JavaScript version: await this.bridge.connect(...))
-        // Select server based on MAC address
-        const std::vector<std::string>& server_list = config_.debug ?
-            config_.websocket.development_servers :
-            config_.websocket.production_servers;
-
-        if (!server_list.empty()) {
-            ret = websocket_bridge_->Connect(server_list[0]);
-            if (ret != error::SUCCESS) {
-                LOG_ERROR("Failed to connect WebSocket bridge: " + error::GetErrorMessage(ret));
-                Close();
-                return;
-            }
-        } else {
-            LOG_ERROR("No WebSocket servers configured");
+        // Connect to WebSocket server using URL and headers from MQTT 'hello' message
+        // IMPORTANT: Ensure WebSocketBridge::Connect method is updated to accept (const std::string& url, const std::map<std::string, std::string>& headers)
+        ret = websocket_bridge_->Connect(ws_url, ws_headers);
+        if (ret != error::SUCCESS) {
+            LOG_ERROR("Failed to connect WebSocket bridge to " + ws_url + ": " + error::GetErrorMessage(ret));
             Close();
             return;
         }

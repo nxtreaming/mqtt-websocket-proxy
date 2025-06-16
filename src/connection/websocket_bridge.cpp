@@ -186,7 +186,7 @@ int WebSocketBridge::InitializeWithDeviceInfo(const ServerConfig& config, uv_loo
     return error::SUCCESS;
 }
 
-int WebSocketBridge::Connect(const std::string& server_url) {
+int WebSocketBridge::Connect(const std::string& server_url, const std::map<std::string, std::string>& headers) {
     if (connected_.load()) {
         LOG_WARN("WebSocket already connected, disconnecting first");
         Disconnect();
@@ -218,57 +218,18 @@ int WebSocketBridge::Connect(const std::string& server_url) {
     ccinfo.protocol = protocols[0].name;
     ccinfo.userdata = this;
     
-    // Add required custom headers for compatibility with JavaScript version
-    // Format: "header-name: header-value\r\n"
-    // JS sends:
-    // 'device-id': this.macAddress,
-    // 'protocol-version': '2',
-    // 'authorization': `Bearer test-token`
-    // 'client-id': this.uuid (if exists)
-    // 'x-forwarded-for': this.userData.ip (if exists)
-    std::string new_headers_str; // Using a different local variable name to avoid potential conflict
-
-    // device-id (Assuming mac_address_ is a member variable like std::string mac_address_)
-    // Ensure mac_address_ is accessible here (e.g., a member of WebSocketBridge)
-    if (!mac_address_.empty()) { 
-        new_headers_str += "device-id: " + mac_address_ + "\r\n";
-    } else {
-        LOG_WARN("MAC address (for device-id header) is empty. Header not sent.");
-    }
-
-    // protocol-version
-    new_headers_str += "protocol-version: 2\r\n"; // String "2" is correct
-
-    // authorization
-    new_headers_str += "authorization: Bearer test-token\r\n"; // Matching JS static token
-
-    // client-id (optional, assuming client_uuid_ is a member like std::string client_uuid_)
-    if (!client_uuid_.empty()) {
-        new_headers_str += "client-id: " + client_uuid_ + "\r\n";
-    }
-
-    // x-forwarded-for (optional, from parsed user_data_)
-    std::string client_ip_from_user_data;
-
-    if (!user_data_.empty()) {
-        try {
-            auto user_data_json = nlohmann::json::parse(user_data_);
-            if (user_data_json.contains("ip") && user_data_json["ip"].is_string()) {
-                client_ip_from_user_data = user_data_json["ip"].get<std::string>();
-            }
-        } catch (const nlohmann::json::parse_error& e) {
-            LOG_WARN("Failed to parse user_data as JSON: " + std::string(e.what()) + ". user_data: " + user_data_);
-        }
-    }
-
-    if (!client_ip_from_user_data.empty()) { 
-        new_headers_str += "x-forwarded-for: " + client_ip_from_user_data + "\r\n";
+    // Construct custom headers from the provided map
+    std::string new_headers_str;
+    for (const auto& header_pair : headers) {
+        new_headers_str += header_pair.first + ": " + header_pair.second + "\r\n";
     }
     
     // Set headers in connection info
     if (!new_headers_str.empty()) {
-        LOG_DEBUG("Adding WebSocket headers: " + new_headers_str);
-        custom_headers_ = new_headers_str; // custom_headers_ is the member that lws uses
+        LOG_DEBUG("Adding WebSocket headers provided by client: " + new_headers_str);
+        custom_headers_ = new_headers_str; // custom_headers_ is the member that lws uses for LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER
+    } else {
+        custom_headers_.clear(); // Ensure it's empty if no headers are provided
     }
     
     if (use_ssl) {
@@ -807,7 +768,7 @@ int WebSocketBridge::TryNextServer() {
 
     LOG_INFO("Attempting to connect to server " + std::to_string(server_index) + ": " + server_url);
 
-    int ret = Connect(server_url);
+    int ret = Connect(server_url, {});
     if (ret != error::SUCCESS) {
         // Try next server
         current_server_index_.store((server_index + 1) % server_list_.size());

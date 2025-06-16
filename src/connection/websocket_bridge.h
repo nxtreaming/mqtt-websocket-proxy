@@ -1,11 +1,11 @@
 #pragma once
 
 #include "common/types.h"
-
 #include <uv.h>
 #include <memory>
 #include <functional>
 #include <string>
+#include <map>
 #include <vector>
 #include <atomic>
 #include <queue>
@@ -76,7 +76,7 @@ public:
      * @param server_url WebSocket server URL
      * @return Error code, 0 indicates success
      */
-    int Connect(const std::string& server_url);
+    int Connect(const std::string& server_url, const std::map<std::string, std::string>& headers);
     
     /**
      * @brief Disconnect from current server

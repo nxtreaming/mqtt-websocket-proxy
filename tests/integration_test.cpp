@@ -69,7 +69,7 @@ bool test_websocket_connection(const std::string& server_url) {
     });
     
     // Connect to server
-    ret = ws_bridge.Connect(server_url);
+    ret = ws_bridge.Connect(server_url, {});
     if (ret != error::SUCCESS) {
         std::cerr << "Failed to connect to WebSocket server: " << ret << std::endl;
         return false;
