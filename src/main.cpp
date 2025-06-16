@@ -1,17 +1,8 @@
-// Windows headers must be included first to avoid conflicts
 #ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef _WINSOCKAPI_
-#define _WINSOCKAPI_   // Prevent winsock.h from being included
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
-// Undefine Windows macros that conflict with our code
+
 #ifdef ERROR
 #undef ERROR
 #endif
