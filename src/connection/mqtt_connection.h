@@ -13,7 +13,6 @@
 #include <vector>
 #include <mutex>
 #include <deque>
-#include <memory> // For std::unique_ptr
 
 namespace xiaozhi {
 
