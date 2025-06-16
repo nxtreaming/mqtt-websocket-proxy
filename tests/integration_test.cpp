@@ -80,8 +80,7 @@ bool test_websocket_connection(const std::string& server_url) {
     int max_attempts = 50;  // 5 seconds total
     
     for (int i = 0; i < max_attempts && g_running; ++i) {
-        ws_bridge.ProcessEvents(timeout_ms);
-        
+
         if (connected) {
             std::cout << "Successfully connected with custom headers!" << std::endl;
             
@@ -91,8 +90,6 @@ bool test_websocket_connection(const std::string& server_url) {
             
             // Process events to receive response
             for (int j = 0; j < 30 && g_running; ++j) {
-                ws_bridge.ProcessEvents(timeout_ms);
-                
                 if (received_message) {
                     std::cout << "Successfully received response!" << std::endl;
                     ws_bridge.Disconnect();

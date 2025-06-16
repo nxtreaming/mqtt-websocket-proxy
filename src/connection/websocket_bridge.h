@@ -101,12 +101,6 @@ public:
      */
     int SendMQTTMessage(const std::string& topic, const std::string& payload, const std::string& client_id);
     
-    /**
-     * @brief Process WebSocket events (call regularly)
-     * @param timeout_ms Timeout in milliseconds
-     * @return Error code, 0 indicates success
-     */
-    int ProcessEvents(int timeout_ms = 0);
     
     /**
      * @brief Check if connected to WebSocket server
@@ -171,6 +165,14 @@ public:
     static void OnReconnectionTimerCallback(uv_timer_t* timer);
 
 private:
+    // LWS Service Timer
+    static constexpr uint64_t LWS_SERVICE_INTERVAL_MS = 50; // milliseconds
+    uv_timer_t service_timer_;
+    bool servicing_active_;
+
+    static void LwsServiceTimerCallback(uv_timer_t* handle);
+    void PerformPeriodicService();
+
     /**
      * @brief Handle WebSocket connection established
      */

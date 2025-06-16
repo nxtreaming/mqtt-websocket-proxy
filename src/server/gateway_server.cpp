@@ -205,10 +205,6 @@ void GatewayServer::Run() {
     while (running_.load() && !stopping_.load()) {
         uv_run(event_loop_.get(), UV_RUN_ONCE);
 
-        // Process WebSocket events
-        if (websocket_bridge_) {
-            websocket_bridge_->ProcessEvents(1); // 1ms timeout
-        }
     }
     
     LOG_INFO("Server event loop finished");

@@ -255,9 +255,6 @@ int main() {
         while (g_test_running.load()) {
             uv_run(&loop, UV_RUN_ONCE);
             
-            // Process WebSocket events
-            websocket_bridge.ProcessEvents(1);
-            
             // Check timeout
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - start_time).count();

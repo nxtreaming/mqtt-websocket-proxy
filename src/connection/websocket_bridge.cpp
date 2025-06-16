@@ -54,7 +54,9 @@ WebSocketBridge::WebSocketBridge()
     , current_reconnection_delay_(1000)
     , reconnecting_(false)
     , current_server_index_(0)
-    , event_loop_(nullptr) {
+    , event_loop_(nullptr)
+    , servicing_active_(false) {
+    service_timer_.data = nullptr; // Initialize timer data for safe checks
     // Initialize preallocated send buffer with a default capacity.
     // LWS_PRE is padding required by libwebsockets.
     // Assuming constants::WEBSOCKET_MAX_MESSAGE_SIZE is defined appropriately.
@@ -296,12 +298,55 @@ int WebSocketBridge::Connect(const std::string& server_url) {
     }
     
     LOG_INFO("Connecting to WebSocket server: " + server_url);
+
+    // Start the lws_service timer if event_loop_ is available
+    if (event_loop_ && !servicing_active_) {
+        int timer_init_ret = uv_timer_init(event_loop_, &service_timer_);
+        if (timer_init_ret == 0) {
+            service_timer_.data = this;
+            // Start immediately (0 delay), then repeat every LWS_SERVICE_INTERVAL_MS
+            int timer_start_ret = uv_timer_start(&service_timer_, LwsServiceTimerCallback, 0, LWS_SERVICE_INTERVAL_MS);
+            if (timer_start_ret == 0) {
+                servicing_active_ = true;
+                LOG_DEBUG("Started lws_service timer.");
+            } else {
+                LOG_ERROR("Failed to start lws_service timer: " + std::string(uv_strerror(timer_start_ret)));
+                // Not a fatal error for Connect, but WebSocket might not function
+            }
+        } else {
+            LOG_ERROR("Failed to initialize lws_service timer: " + std::string(uv_strerror(timer_init_ret)));
+        }
+    } else if (!event_loop_) {
+        LOG_ERROR("Cannot start lws_service timer: event_loop_ is null.");
+    } else if (servicing_active_) {
+        LOG_DEBUG("lws_service timer already active.");
+    }
+
     return error::SUCCESS;
 }
 
 int WebSocketBridge::Disconnect() {
     // Stop reconnection timer
     StopReconnectionTimer();
+
+    // Stop and close the lws_service timer
+    if (servicing_active_ && service_timer_.data) { // service_timer_.data check ensures it was initialized
+        uv_timer_stop(&service_timer_);
+        servicing_active_ = false; // Set before uv_close to prevent PerformPeriodicService from running if callback was pending
+        
+        // Check if the handle is active or closing before calling uv_close to avoid assertion errors on some libuv versions
+        // However, a simple data pointer check and ensuring it's only closed once is usually sufficient.
+        // uv_close is idempotent if the handle is properly zeroed out or re-initialized after close, 
+        // but here we just ensure it's called on an initialized timer.
+        if (uv_is_active(reinterpret_cast<uv_handle_t*>(&service_timer_))) {
+             LOG_DEBUG("lws_service timer is active, stopping...");
+        }
+        uv_close(reinterpret_cast<uv_handle_t*>(&service_timer_), nullptr); // nullptr for callback, fire and forget
+        LOG_DEBUG("Stopped and closed lws_service timer.");
+        service_timer_.data = nullptr; // Mark as closed/uninitialized for safety
+    } else {
+        LOG_DEBUG("lws_service timer was not active or not properly initialized during disconnect.");
+    }
 
     if (websocket_) {
         lws_close_reason(websocket_, LWS_CLOSE_STATUS_NORMAL, nullptr, 0);
@@ -350,18 +395,22 @@ int WebSocketBridge::SendMQTTMessage(const std::string& topic, const std::string
     return SendMessage(json_message);
 }
 
-int WebSocketBridge::ProcessEvents(int timeout_ms) {
-    if (!context_) {
-        return error::WEBSOCKET_ERROR;
+// Static callback for the lws_service timer
+void WebSocketBridge::LwsServiceTimerCallback(uv_timer_t* handle) {
+    WebSocketBridge* bridge = static_cast<WebSocketBridge*>(handle->data);
+    if (bridge) {
+        bridge->PerformPeriodicService();
     }
-    
-    int ret = lws_service(context_, timeout_ms);
-    if (ret < 0) {
-        LOG_ERROR("WebSocket service error: " + std::to_string(ret));
-        return error::WEBSOCKET_ERROR;
+}
+
+// Private method called by the lws_service timer
+void WebSocketBridge::PerformPeriodicService() {
+    // lws_service needs to be called to drive the connection state machine (connect, read, write, close)
+    // It should run as long as the context is valid and the timer is supposed to be active.
+    if (context_ && servicing_active_) { 
+        // LOG_TRACE("Performing lws_service via timer"); // Potentially very verbose
+        lws_service(context_, 0); // Non-blocking service call, 0 timeout
     }
-    
-    return error::SUCCESS;
 }
 
 bool WebSocketBridge::IsConnected() const {
