@@ -15,7 +15,6 @@
 namespace xiaozhi {
 class MQTTServer;
 class UDPServer;
-class WebSocketBridge;
 }
 
 namespace xiaozhi {
@@ -131,12 +130,6 @@ private:
     int InitializeUDPServer();
 
     /**
-     * @brief Initialize WebSocket bridge
-     * @return Error code, 0 indicates success
-     */
-    int InitializeWebSocketBridge();
-
-    /**
      * @brief Start statistics timer
      * @return Error code, 0 indicates success
      */
@@ -165,14 +158,6 @@ private:
     int ValidateConfig();
 
     /**
-     * @brief Handle MQTT message forwarding
-     * @param connection_id Connection ID
-     * @param topic MQTT topic
-     * @param payload Message payload
-     */
-    void OnMQTTMessageForward(ConnectionId connection_id, const std::string& topic, const std::string& payload);
-
-    /**
      * @brief Handle MQTT client connected
      * @param connection_id Connection ID
      * @param client_id Client ID
@@ -192,31 +177,6 @@ private:
      * @return UDP connection info
      */
     UDPConnectionInfo OnUDPInfoRequest(ConnectionId connection_id);
-
-    /**
-     * @brief Handle WebSocket message received
-     * @param message Received message
-     */
-    void OnWebSocketMessageReceived(const std::string& message);
-
-    /**
-     * @brief Handle WebSocket binary message received (audio data)
-     * @param data Binary data (JavaScript compatible format)
-     */
-    void OnWebSocketBinaryMessageReceived(const std::vector<uint8_t>& data);
-
-    /**
-     * @brief Handle WebSocket connected
-     * @param server_url Connected server URL
-     */
-    void OnWebSocketConnected(const std::string& server_url);
-
-    /**
-     * @brief Handle WebSocket disconnected
-     * @param server_url Disconnected server URL
-     * @param reason Disconnect reason
-     */
-    void OnWebSocketDisconnected(const std::string& server_url, int reason);
 
     /**
      * @brief Handle UDP audio data received
@@ -245,7 +205,6 @@ private:
     std::unique_ptr<Logger> logger_;
     std::unique_ptr<MQTTServer> mqtt_server_;
     std::unique_ptr<UDPServer> udp_server_;
-    std::unique_ptr<WebSocketBridge> websocket_bridge_;
 
     // Configuration and state
     ServerConfig config_;

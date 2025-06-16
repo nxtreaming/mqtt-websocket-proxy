@@ -79,6 +79,14 @@ public:
     int SendMQTTPacket(const std::vector<uint8_t>& buffer);
     
     /**
+     * @brief Forwards an MQTT message received from the client to its dedicated WebSocket bridge.
+     *
+     * @param topic The MQTT topic of the message.
+     * @param payload The message payload.
+     */
+    void ForwardMqttMessageToWebSocket(const std::string& topic, const std::string& payload);
+
+    /**
      * @brief Forward message from WebSocket to MQTT client
      * @param topic MQTT topic
      * @param payload Message payload
@@ -99,6 +107,24 @@ public:
      */
     ConnectionId GetConnectionId() const;
     
+    /**
+     * @brief Get UDP connection information
+     * @return UDP connection information
+     */
+    UDPConnectionInfo GetUDPConnectionInfo() const;
+
+    /**
+     * @brief Gets the UDP session ID associated with this MQTT connection.
+     * @return The UDP session ID, or an empty string if not set.
+     */
+    std::string GetUDPSessionId() const;
+
+    /**
+     * @brief Sends a generic message payload to this connection's WebSocket bridge.
+     * @param message_payload The string message to send.
+     */
+    void SendMessageToWebSocket(const std::string& message_payload);
+
     /**
      * @brief Get client ID
      * @return Client ID
@@ -260,6 +286,9 @@ private:
     ForwardMessageCallback forward_message_callback_;
     UDPInfoCallback udp_info_callback_;
     UDPSendCallback udp_send_callback_;
+
+    // UDP session info
+    UDPConnectionInfo udp_connection_info_;
     
     // Buffer for reading
     std::vector<uint8_t> read_buffer_;

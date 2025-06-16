@@ -381,4 +381,20 @@ void MQTTServer::OnCleanupTimer(uv_timer_t* timer) {
     }
 }
 
+void MQTTServer::ForwardUDPEventToConnection(const std::string& udp_session_id, const std::string& message_payload) {
+    if (udp_session_id.empty()) {
+        LOG_WARN("Attempted to forward UDP event with empty session ID.");
+        return;
+    }
+
+    for (auto& [conn_id, connection_ptr] : connections_) {
+        if (connection_ptr && connection_ptr->GetUDPSessionId() == udp_session_id) {
+            LOG_DEBUG("Forwarding UDP event for session " + udp_session_id + " to MQTT connection " + std::to_string(conn_id));
+            connection_ptr->SendMessageToWebSocket(message_payload);
+            return; // Assume only one MQTT connection per UDP session
+        }
+    }
+    LOG_WARN("No MQTT connection found for UDP session ID: " + udp_session_id + " to forward event.");
+}
+
 } // namespace xiaozhi

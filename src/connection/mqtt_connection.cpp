@@ -193,6 +193,18 @@ int MQTTConnection::SendMQTTPacket(const std::vector<uint8_t>& buffer) {
     return SendData(buffer.data(), buffer.size());
 }
 
+void MQTTConnection::ForwardMqttMessageToWebSocket(const std::string& topic, const std::string& payload) {
+    if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
+        LOG_DEBUG("Forwarding MQTT message from client " + client_id_ + " to WebSocket: topic=" + topic);
+        int ret = websocket_bridge_->SendMQTTMessage(topic, payload, client_id_);
+        if (ret != error::SUCCESS) {
+            LOG_ERROR("Failed to forward message to WebSocket for client " + client_id_ + ": " + error::GetErrorMessage(ret));
+        }
+    } else {
+        LOG_WARN("WebSocket bridge not available or connected for client " + client_id_ + ", cannot forward message.");
+    }
+}
+
 int MQTTConnection::ForwardFromWebSocket(const std::string& topic, const std::string& payload) {
     if (!authenticated_) {
         LOG_WARN("Attempting to forward to unauthenticated connection " + std::to_string(connection_id_));
@@ -257,6 +269,26 @@ int MQTTConnection::SendUDPInfo(const UDPConnectionInfo& udp_info) {
               ": session=" + udp_info.session_id + ", encryption=" + udp_info.encryption_method);
 
     return ForwardFromWebSocket(credentials_.reply_to_topic, json_payload);
+}
+
+UDPConnectionInfo MQTTConnection::GetUDPConnectionInfo() const {
+    return udp_connection_info_;
+}
+
+std::string MQTTConnection::GetUDPSessionId() const {
+    return udp_connection_info_.session_id;
+}
+
+void MQTTConnection::SendMessageToWebSocket(const std::string& message_payload) {
+    if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
+        LOG_DEBUG("Sending message to WebSocket for client " + client_id_ + ": " + message_payload.substr(0, 100) + (message_payload.length() > 100 ? "..." : ""));
+        int ret = websocket_bridge_->SendMessage(message_payload);
+        if (ret != error::SUCCESS) {
+            LOG_ERROR("Failed to send message to WebSocket for client " + client_id_ + ": " + error::GetErrorMessage(ret));
+        }
+    } else {
+        LOG_WARN("WebSocket bridge not available or connected for client " + client_id_ + ", cannot send message.");
+    }
 }
 
 ConnectionId MQTTConnection::GetConnectionId() const {
@@ -358,9 +390,10 @@ void MQTTConnection::OnMQTTPublish(const MQTTPublishPacket& packet) {
         return;
     }
 
-    LOG_DEBUG("MQTT PUBLISH from " + client_id_ +
-              ": topic=" + packet.GetTopic() +
-              ", size=" + std::to_string(packet.GetPayload().length()));
+    LOG_DEBUG("MQTT PUBLISH from " + client_id_ + ": topic=" + packet.GetTopic());
+
+    // Forward the message directly to the WebSocket bridge
+    ForwardMqttMessageToWebSocket(packet.GetTopic(), packet.GetPayload());
 
     // JavaScript version: if (publishData.qos !== 0) { this.close(); return; }
     if (packet.GetQoS() != 0) {

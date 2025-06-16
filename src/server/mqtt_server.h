@@ -114,6 +114,17 @@ public:
      * @return Server statistics
      */
     ServerStats GetStats() const;
+
+    /**
+     * @brief Forwards a UDP-originated event as a WebSocket message to the relevant MQTTConnection.
+     *
+     * This method finds the MQTTConnection associated with the given UDP session ID
+     * and instructs it to send the message_payload over its WebSocket bridge.
+     *
+     * @param udp_session_id The UDP session ID to identify the target MQTTConnection.
+     * @param message_payload The raw message string to be sent over WebSocket.
+     */
+    void ForwardUDPEventToConnection(const std::string& udp_session_id, const std::string& message_payload);
     
     /**
      * @brief Set callbacks
