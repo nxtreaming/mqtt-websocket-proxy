@@ -165,11 +165,6 @@ public:
     static void OnReconnectionTimerCallback(uv_timer_t* timer);
 
 private:
-    // LWS Service Timer
-    static constexpr uint64_t LWS_SERVICE_INTERVAL_MS = 50; // milliseconds
-    uv_timer_t service_timer_;
-    bool servicing_active_;
-
     static void LwsServiceTimerCallback(uv_timer_t* handle);
     void PerformPeriodicService();
 
@@ -261,6 +256,8 @@ private:
 
 private:
     ServerConfig config_;
+    bool servicing_active_;
+
     std::atomic<bool> connected_;
     std::string current_server_;
 
@@ -276,6 +273,10 @@ private:
     lws_context* context_;
     lws* websocket_;
     std::unique_ptr<lws_protocols[]> protocols_;
+
+    // LWS Service Timer
+    static constexpr uint64_t LWS_SERVICE_INTERVAL_MS = 50; // milliseconds
+    uv_timer_t service_timer_;
 
     // Connection info
     WebSocketConnectionInfo connection_info_;
