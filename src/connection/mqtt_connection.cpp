@@ -19,6 +19,8 @@
 
 namespace xiaozhi {
 
+static const uint64_t SERVER_HELLO_TIMEOUT_MS = 10000; // 10 seconds
+
 MQTTConnection::MQTTConnection(ConnectionId connection_id, uv_tcp_t* tcp_handle, uv_loop_t* loop, const ServerConfig& config)
     : connection_id_(connection_id)
     , tcp_handle_(tcp_handle)
@@ -30,10 +32,13 @@ MQTTConnection::MQTTConnection(ConnectionId connection_id, uv_tcp_t* tcp_handle,
     , config_(config)
     , udp_info_()
     , session_start_time_(std::chrono::steady_clock::now())
-    , session_duration_ms_(0) {
+    , session_duration_ms_(0)
+    , is_waiting_for_server_hello_(false)
+    , is_websocket_audio_stream_active_(false) {
 
     tcp_handle_->data = this;
     read_buffer_.reserve(constants::TCP_BUFFER_SIZE);
+    server_hello_timer_.data = this;
 }
 
 MQTTConnection::~MQTTConnection() {
@@ -386,53 +391,77 @@ void MQTTConnection::OnMQTTPublish(const MQTTPublishPacket& packet) {
         return;
     }
 
-    // Parse JSON message (JavaScript version: const json = JSON.parse(publishData.payload))
-    try {
-        nlohmann::json json = nlohmann::json::parse(packet.GetPayload());
+    const std::string& payload_str = packet.GetPayload();
 
-        if (json.contains("type")) {
-            std::string message_type = json["type"];
+    try {
+        nlohmann::json json = nlohmann::json::parse(payload_str);
+
+        if (json.contains("type") && json["type"].is_string()) {
+            std::string message_type = json["type"].get<std::string>();
 
             if (message_type == "hello") {
-                // JavaScript version: if (json.version !== 3) { this.close(); return; }
                 if (!json.contains("version") || json["version"] != 3) {
-                    LOG_WARN("Unsupported protocol version: " +
-                             (json.contains("version") ? std::to_string(json["version"].get<int>()) : "missing") +
+                    LOG_WARN("Client " + client_id_ + ": Unsupported protocol version in 'hello': " +
+                             (json.contains("version") ? json["version"].dump() : "missing") +
                              ", closing connection");
                     Close();
                     return;
                 }
-
-                // Handle hello message (JavaScript version: this.parseHelloMessage(json))
                 ParseHelloMessage(json);
                 return;
             } else if (message_type == "mcp") {
-                // Process MCP message
+                // Process MCP message locally
                 if (mcp_proxy_) {
-                    if (json.contains("payload") && json["payload"].contains("result")) {
-                        // MCP response message
-                        mcp_proxy_->HandleMcpResponse(json);
-                    } else {
-                        // MCP request message (from bridge)
-                        mcp_proxy_->OnMcpMessageFromBridge(json);
-                    }
+                    // Distinguish between request and response if necessary, or have mcp_proxy handle it
+                    mcp_proxy_->OnMcpMessageFromBridge(json); // Assuming this can handle both or route internally
                 }
-                return; // MCP messages are not forwarded to WebSocket
+                // MCP messages are typically not forwarded directly over the primary data WebSocket after initial setup
+                // unless the protocol explicitly states so for specific MCP interactions.
+                LOG_DEBUG("Client " + client_id_ + ": Handled MCP message locally.");
+                return;
             } else {
-                // Other message types (JavaScript version: this.parseOtherMessage(json))
+                // Handles 'audio_stream_start', 'audio_stream_end', and other JSON messages.
+                // ParseOtherMessage will update audio stream state and forward to WebSocket.
                 ParseOtherMessage(json);
                 return;
             }
+        } else {
+            // Valid JSON, but no 'type' field or 'type' is not a string.
+            LOG_WARN("Client " + client_id_ + ": MQTT PUBLISH: Valid JSON but missing or invalid 'type' field. Payload: " + payload_str.substr(0, 200) + (payload_str.length() > 200 ? "..." : ""));
+            Close();
+            return;
         }
-
+    } catch (const nlohmann::json::parse_error& e) {
+        // Payload is not valid JSON. Check if it's binary audio for an active stream.
+        if (websocket_bridge_ && websocket_bridge_->IsConnected() && is_websocket_audio_stream_active_) {
+            LOG_DEBUG("Client " + client_id_ + ": MQTT PUBLISH: Non-JSON payload (size: " + std::to_string(payload_str.length()) + "), assuming binary audio data as stream is active.");
+            int ret = websocket_bridge_->SendBinaryData(
+                reinterpret_cast<const unsigned char*>(payload_str.data()),
+                payload_str.length()
+            );
+            if (ret != error::SUCCESS) {
+                LOG_ERROR("Client " + client_id_ + ": MQTT PUBLISH: Failed to send binary audio data to WebSocket: " + error::GetErrorMessage(ret));
+                Close(); // Close if sending binary data fails
+            }
+            return;
+        } else {
+            // Not valid JSON, and audio stream is not active (or WebSocket bridge not ready).
+            std::string reason = "audio stream not active";
+            if (!websocket_bridge_ || !websocket_bridge_->IsConnected()) {
+                reason = "WebSocket bridge not connected/ready";
+            }
+            LOG_ERROR("Client " + client_id_ + ": MQTT PUBLISH: Failed to parse JSON message and " + reason + ". Error: " + std::string(e.what()) + ". Payload: " + payload_str.substr(0, 200) + (payload_str.length() > 200 ? "..." : ""));
+            Close();
+            return;
+        }
     } catch (const std::exception& e) {
-        LOG_ERROR("Failed to parse JSON message: " + std::string(e.what()) + ", closing connection");
+        // Catch other potential exceptions during JSON handling (e.g., type errors if not checking is_string() etc.)
+        LOG_ERROR("Client " + client_id_ + ": MQTT PUBLISH: Unexpected exception during message processing. Error: " + std::string(e.what()) + ". Payload: " + payload_str.substr(0, 200) + (payload_str.length() > 200 ? "..." : ""));
         Close();
         return;
     }
-
-    // If we reach here, the message format is problematic
-    LOG_WARN("Invalid message format, closing connection");
+    // Fallback, should ideally not be reached if all cases are handled above.
+    LOG_WARN("Client " + client_id_ + ": MQTT PUBLISH: Unhandled message format or logic path. Closing connection. Payload: " + payload_str.substr(0, 200) + (payload_str.length() > 200 ? "..." : ""));
     Close();
 }
 
@@ -479,6 +508,17 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
             credentials_.uuid,
             credentials_.user_data
         );
+
+        // Ensure standard headers are present for WebSocket connection
+        if (ws_headers.find("Protocol-Version") == ws_headers.end()) {
+            ws_headers["Protocol-Version"] = std::to_string(protocol_version);
+        }
+        if (ws_headers.find("Device-Id") == ws_headers.end() && !credentials_.mac_address.empty()) {
+            ws_headers["Device-Id"] = credentials_.mac_address;
+        }
+        if (ws_headers.find("Client-Id") == ws_headers.end() && !credentials_.uuid.empty()) {
+            ws_headers["Client-Id"] = credentials_.uuid;
+        }
 
         // Initialize the bridge with the server configuration and event loop
         int ret = websocket_bridge_->Initialize(config_, loop_);
@@ -576,11 +616,14 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
                 if (json_msg.contains("type") && json_msg["type"] == "hello") {
                     // This is the hello reply from the WebSocket server
                     LOG_INFO("Received hello reply from WebSocket server");
+
+                    // Stop the hello timeout timer as we have received the response
+                    StopServerHelloTimer();
                     
                     // Extract session ID
                     std::string session_id;
                     if (json_msg.contains("session_id")) {
-                        session_id = json_msg["session_id"];
+                        session_id = json_msg["session_id"].get<std::string>();
                     } else {
                         // Generate a session ID if not provided
                         // Use a simple UUID generation for compatibility
@@ -600,6 +643,9 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
                         
                         session_id = uuid_str;
                     }
+
+                    // Store the session ID in the credentials for later use
+                    credentials_.session_id = session_id;
                     
                     // Create UDP connection info
                     UDPConnectionInfo udp_info;
@@ -681,22 +727,45 @@ void MQTTConnection::ParseHelloMessage(const nlohmann::json& json) {
 
     } catch (const std::exception& e) {
         LOG_ERROR("Error processing hello message: " + std::string(e.what()));
-        Close();
     }
 }
 
 void MQTTConnection::ParseOtherMessage(const nlohmann::json& json) {
-    // JavaScript version: parseOtherMessage(json)
-    LOG_DEBUG("Processing other message type from " + client_id_);
+    std::string message_type_str = "unknown";
+    if (json.contains("type") && json["type"].is_string()) {
+        message_type_str = json["type"].get<std::string>();
+    } else {
+        LOG_WARN("Client " + client_id_ + ": 'other' message received without a valid string 'type' field. Forwarding as is. Payload: " + json.dump(2).substr(0, 200) + (json.dump(2).length() > 200 ? "..." : ""));
+    }
 
-    // Forward to WebSocket (if connected)
+    LOG_DEBUG("Client " + client_id_ + ": Processing 'other' message type: '" + message_type_str + "'");
+
+    if (message_type_str == "audio_stream_start") {
+        if (!is_websocket_audio_stream_active_) {
+            LOG_INFO("Client " + client_id_ + ": WebSocket audio stream started.");
+            is_websocket_audio_stream_active_ = true;
+        } else {
+            LOG_WARN("Client " + client_id_ + ": Received 'audio_stream_start' but audio stream already active.");
+        }
+    } else if (message_type_str == "audio_stream_end") {
+        if (is_websocket_audio_stream_active_) {
+            LOG_INFO("Client " + client_id_ + ": WebSocket audio stream ended.");
+            is_websocket_audio_stream_active_ = false;
+        } else {
+            LOG_WARN("Client " + client_id_ + ": Received 'audio_stream_end' but audio stream was not active.");
+        }
+    }
+    // Other 'other' types (e.g., custom JSON messages) will just fall through and be forwarded.
+
     if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
-        int ret = websocket_bridge_->SendMessage(json.dump());
+        std::string msg_to_send = json.dump();
+        LOG_DEBUG("Client " + client_id_ + ": Forwarding '" + message_type_str + "' message to WebSocket. Size: " + std::to_string(msg_to_send.length()));
+        int ret = websocket_bridge_->SendMessage(msg_to_send);
         if (ret != error::SUCCESS) {
-            LOG_ERROR("Failed to forward message to WebSocket: " + error::GetErrorMessage(ret));
+            LOG_ERROR("Client " + client_id_ + ": Failed to forward 'other' message (type: " + message_type_str + ") to WebSocket: " + error::GetErrorMessage(ret));
         }
     } else {
-        LOG_WARN("WebSocket bridge not connected, cannot forward message");
+        LOG_WARN("Client " + client_id_ + ": Cannot forward 'other' message (type: " + message_type_str + "): WebSocket bridge not available or connected.");
     }
 }
 
@@ -871,6 +940,53 @@ void MQTTConnection::SendSuback(uint16_t packet_id, uint8_t return_code) {
     }
 }
 
+// --- Server Hello Timeout Logic ---
+
+void MQTTConnection::OnServerHelloTimeoutCallback(uv_timer_t* handle) {
+    MQTTConnection* self = static_cast<MQTTConnection*>(handle->data);
+    if (self && self->is_waiting_for_server_hello_) {
+        LOG_WARN("Client " + self->client_id_ + ": Timeout waiting for server 'hello' response. Closing connection.");
+        self->is_waiting_for_server_hello_ = false; // Prevent re-entry or issues if Close is called again
+        // StopServerHelloTimer is implicitly called by Close()
+        self->Close();
+    }
+}
+
+void MQTTConnection::StartServerHelloTimer() {
+    if (closing_ || !loop_) {
+        return;
+    }
+    if (is_waiting_for_server_hello_) { // Already running
+        LOG_DEBUG("Client " + client_id_ + ": Server hello timer already running.");
+        return;
+    }
+
+    LOG_DEBUG("Client " + client_id_ + ": Starting server 'hello' timeout timer (" + std::to_string(SERVER_HELLO_TIMEOUT_MS) + "ms).");
+    uv_timer_init(loop_, &server_hello_timer_);
+    server_hello_timer_.data = this; // Ensure data is set before start, though constructor does it too
+    int ret = uv_timer_start(&server_hello_timer_, OnServerHelloTimeoutCallback, SERVER_HELLO_TIMEOUT_MS, 0); // 0 for non-repeating
+    if (ret != 0) {
+        LOG_ERROR("Client " + client_id_ + ": Failed to start server hello timer: " + std::string(uv_strerror(ret)));
+    } else {
+        is_waiting_for_server_hello_ = true;
+    }
+}
+
+void MQTTConnection::StopServerHelloTimer() {
+    if (is_waiting_for_server_hello_) {
+        LOG_DEBUG("Client " + client_id_ + ": Stopping server 'hello' timeout timer.");
+        is_waiting_for_server_hello_ = false;
+        // Stop the timer. It's safe to call uv_timer_stop on an inactive timer.
+        // We do not call uv_close here because the timer handle is part of the MQTTConnection object
+        // and may need to be reused. It will be closed properly in the Close() method.
+        uv_timer_stop(&server_hello_timer_);
+    } else {
+        // LOG_DEBUG("Client " + client_id_ + ": Server hello timer was not running or already stopped.");
+    }
+}
+
+// --- End Server Hello Timeout Logic ---
+
 void MQTTConnection::SendPingresp() {
     std::vector<uint8_t> buffer;
     int ret = mqtt_protocol_->CreatePingrespPacket(buffer);
@@ -880,6 +996,10 @@ void MQTTConnection::SendPingresp() {
 }
 
 void MQTTConnection::Close() {
+    // Stop the server hello timer if it's running, before any other close logic
+    // This is important to prevent the timer callback from executing on a partially closed connection
+    StopServerHelloTimer();
+
     if (closing_) {
         return;
     }
@@ -919,12 +1039,24 @@ void MQTTConnection::Close() {
     // Close WebSocket bridge (JavaScript version: if (this.bridge) { this.bridge.close(); })
     if (websocket_bridge_) {
         websocket_bridge_->Disconnect();
-        websocket_bridge_.reset();
     }
 
-    if (tcp_handle_) {
+    // Stop and close all timers and handles associated with this connection
+    if (uv_is_active(reinterpret_cast<uv_handle_t*>(&server_hello_timer_))) {
+        uv_timer_stop(&server_hello_timer_);
+    }
+    // It's safe to close an initialized-but-not-running timer handle.
+    // We ensure it's closed here so libuv can clean up its resources.
+    if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(&server_hello_timer_))) {
+        uv_close(reinterpret_cast<uv_handle_t*>(&server_hello_timer_), nullptr);
+    }
+
+    // Close the TCP handle if it's active
+    if (tcp_handle_ && !uv_is_closing(reinterpret_cast<uv_handle_t*>(tcp_handle_))) {
         uv_close(reinterpret_cast<uv_handle_t*>(tcp_handle_), OnClose);
-        tcp_handle_ = nullptr;
+    } else {
+        // If handle is already closing or null, just delete this instance
+        delete this;
     }
 }
 

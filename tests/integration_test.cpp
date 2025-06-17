@@ -23,7 +23,7 @@ void signal_handler(int signal) {
     g_running = false;
 }
 
-// Test WebSocket connection with custom headers
+// Test WebSocket connection with custom headers and binary data
 bool test_websocket_connection(const std::string& server_url) {
     std::cout << "Testing WebSocket connection to " << server_url << std::endl;
     
@@ -38,16 +38,21 @@ bool test_websocket_connection(const std::string& server_url) {
     ServerConfig config;
     config.websocket.production_servers.push_back(server_url); // Use production servers for testing
 
-    uv_loop_t* loop = nullptr;
-    int ret = ws_bridge.Initialize(config, loop);
+    // The WebSocketBridge now requires a uv_loop to manage its internal service timer.
+    // We create a temporary loop here for the test.
+    uv_loop_t loop;
+    uv_loop_init(&loop);
+
+    int ret = ws_bridge.Initialize(config, &loop);
     if (ret != error::SUCCESS) {
         std::cerr << "Failed to initialize WebSocketBridge: " << ret << std::endl;
+        uv_loop_close(&loop);
         return false;
     }
     
     // Set up callbacks
-    bool connected = false;
-    bool received_message = false;
+    std::atomic<bool> connected = false;
+    std::atomic<bool> received_message = false;
     
     ws_bridge.SetConnectedCallback([&connected](const std::string& url) {
         std::cout << "Connected to " << url << std::endl;
@@ -71,42 +76,70 @@ bool test_websocket_connection(const std::string& server_url) {
     ret = ws_bridge.Connect(server_url, {});
     if (ret != error::SUCCESS) {
         std::cerr << "Failed to connect to WebSocket server: " << ret << std::endl;
+        uv_loop_close(&loop);
         return false;
     }
     
     // Process events for a while to establish connection
-    int timeout_ms = 100;
     int max_attempts = 50;  // 5 seconds total
     
     for (int i = 0; i < max_attempts && g_running; ++i) {
-
+        uv_run(&loop, UV_RUN_NOWAIT); // Drive the event loop
         if (connected) {
-            std::cout << "Successfully connected with custom headers!" << std::endl;
+            std::cout << "Successfully connected!" << std::endl;
             
-            // Send a test message
+            // Send a test text message
             std::string test_message = "{\"type\":\"test\",\"data\":\"integration_test\"}";
             ws_bridge.SendMessage(test_message);
             
-            // Process events to receive response
-            for (int j = 0; j < 30 && g_running; ++j) {
-                if (received_message) {
-                    std::cout << "Successfully received response!" << std::endl;
-                    ws_bridge.Disconnect();
-                    return true;
-                }
-                
+            // Wait for response to text message
+            for (int j = 0; j < 30 && g_running && !received_message; ++j) {
+                uv_run(&loop, UV_RUN_NOWAIT);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
+
+            if (!received_message) {
+                std::cerr << "Timed out waiting for response to text message" << std::endl;
+                ws_bridge.Disconnect();
+                uv_run(&loop, UV_RUN_ONCE); // Allow disconnect events to process
+                uv_loop_close(&loop);
+                return false;
+            }
+
+            std::cout << "Successfully received response for text message!" << std::endl;
+
+            // NOW, TEST BINARY SEND
+            std::cout << "Sending a test binary message..." << std::endl;
+            std::vector<unsigned char> binary_payload = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
+            int send_ret = ws_bridge.SendBinaryData(binary_payload.data(), binary_payload.size());
+            if (send_ret != error::SUCCESS) {
+                std::cerr << "Failed to send binary data: " << error::GetErrorMessage(send_ret) << std::endl;
+                ws_bridge.Disconnect();
+                uv_run(&loop, UV_RUN_ONCE);
+                uv_loop_close(&loop);
+                return false;
+            }
+
+            // We don't have a way to verify the server received it,
+            // but we can at least confirm the call succeeded and didn't crash.
+            // We'll just wait a bit to let the event loop process the send.
+            std::cout << "Binary data send initiated successfully." << std::endl;
+            uv_run(&loop, UV_RUN_NOWAIT);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             
-            std::cerr << "Timed out waiting for response" << std::endl;
             ws_bridge.Disconnect();
-            return false;
+            uv_run(&loop, UV_RUN_ONCE); // Allow disconnect events to process
+            uv_loop_close(&loop);
+            return true;
         }
         
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     
     std::cerr << "Timed out waiting for connection" << std::endl;
+    ws_bridge.Disconnect();
+    uv_run(&loop, UV_RUN_ONCE);
+    uv_loop_close(&loop);
     return false;
 }
 

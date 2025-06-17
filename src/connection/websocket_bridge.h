@@ -87,6 +87,14 @@ public:
      * @return Error code, 0 indicates success
      */
     int SendMessage(const std::string& message);
+
+    /**
+     * @brief Send binary data to WebSocket server
+     * @param data Pointer to the binary data
+     * @param len Length of the binary data
+     * @return Error code, 0 indicates success
+     */
+    int SendBinaryData(const unsigned char* data, size_t len);
     
     /**
      * @brief Send MQTT message as JSON to WebSocket server
@@ -302,6 +310,10 @@ private:
 
     // Preallocated buffer for sending messages
     std::vector<unsigned char> preallocated_send_buffer_;
+
+    // Pending binary data to send
+    std::vector<unsigned char> pending_binary_data_;
+    std::atomic<bool> has_pending_binary_data_;
 
     uv_loop_t* event_loop_;
 

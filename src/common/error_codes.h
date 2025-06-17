@@ -22,6 +22,7 @@ enum Code {
     ALREADY_EXISTS = 8,
     NOT_FOUND = 9,
     PERMISSION_DENIED = 10,
+    BUSY = 11,
 
     // Network errors (100-199)
     NETWORK_ERROR = 100,
@@ -128,6 +129,7 @@ inline const std::unordered_map<int, std::string>& GetErrorMessages() {
 
         // General errors
         {INVALID_PARAMETER, "Invalid parameter"},
+        {BUSY, "Resource or operation is busy"},
         {OUT_OF_MEMORY, "Out of memory"},
         {INTERNAL_ERROR, "Internal error"},
         {NOT_IMPLEMENTED, "Not implemented"},

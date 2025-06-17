@@ -154,6 +154,10 @@ public:
     void SetUDPInfoCallback(UDPInfoCallback callback) { udp_info_callback_ = std::move(callback); }
     void SetUDPSendCallback(UDPSendCallback callback) { udp_send_callback_ = std::move(callback); }
 
+    // Server Hello Timeout management
+    void StartServerHelloTimer();
+    void StopServerHelloTimer();
+
 private:
     /**
      * @brief Handle incoming data
@@ -240,6 +244,7 @@ private:
     void Close();
     
     // Static callbacks for libuv
+    static void OnServerHelloTimeoutCallback(uv_timer_t* handle);
     static void OnRead(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf);
     static void OnWrite(uv_write_t* req, int status);
     static void OnClose(uv_handle_t* handle);
@@ -303,6 +308,13 @@ private:
     // Helper methods for pool management
     std::unique_ptr<WriteRequestContext> AcquireWriteRequestContext();
     void ReleaseWriteRequestContext(std::unique_ptr<WriteRequestContext> context);
+
+    // Server Hello Timeout
+    uv_timer_t server_hello_timer_;
+    bool is_waiting_for_server_hello_;
+
+    // WebSocket Audio Stream State
+    bool is_websocket_audio_stream_active_;
     
     // Disable copy
     MQTTConnection(const MQTTConnection&) = delete;

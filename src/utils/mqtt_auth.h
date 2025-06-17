@@ -17,6 +17,11 @@ struct MqttCredentials {
     std::string uuid;
     std::string user_data;
     std::string reply_to_topic;
+    std::string session_id; // WebSocket session ID from server
+    std::string username;
+    std::string password;
+    std::string client_id;
+    int protocol_version = 0;
 };
 
 /**
