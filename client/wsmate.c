@@ -4,9 +4,13 @@
 #include <time.h>
 #include <libwebsockets.h>
 #include "cjson/cJSON.h"
+#include <signal.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <pthread.h>
+#include <unistd.h>
 #endif
 
 //
@@ -17,19 +21,6 @@
 //
 
 #define MAX_PAYLOAD_SIZE 1024
-
-static int interrupted = 0;
-static struct lws *wsi_global = NULL;
-static time_t hello_sent_time = 0;
-static int server_hello_received = 0;
-static int listen_sent = 0;
-static time_t listen_sent_time = 0;
-static int wake_word_sent = 0;
-static int abort_sent = 0;
-static int binary_frames_sent_count = 0;
-static unsigned long last_binary_frame_send_time_ms = 0;
-static char g_session_id[64] = {0}; // Global to store session_id
-
 #define HELLO_TIMEOUT_SECONDS 10
 #define WAKE_WORD_SEND_OFFSET_SECONDS 3
 #define ABORT_SEND_OFFSET_SECONDS 6 // Must be > WAKE_WORD_SEND_OFFSET_SECONDS
@@ -46,6 +37,33 @@ static char g_session_id[64] = {0}; // Global to store session_id
 #define AUTH_TOKEN "testtoken"
 #define DEVICE_ID "00:11:22:33:44:55"
 #define CLIENT_ID "testclient"
+
+static int interrupted = 0;
+static struct lws *wsi_global = NULL;
+static time_t hello_sent_time = 0;
+static int server_hello_received = 0;
+static int listen_sent = 0;
+static time_t listen_sent_time = 0;
+static int wake_word_sent = 0;
+static int abort_sent = 0;
+static int binary_frames_sent_count = 0;
+static unsigned long last_binary_frame_send_time_ms = 0;
+static char g_session_id[64] = {0};
+
+// Signal handler function
+static void sigint_handler(int sig) {
+    (void)sig; // Unused parameter
+    fprintf(stdout, "\nCaught SIGINT/Ctrl+C, initiating shutdown...\n");
+    interrupted = 1;
+}
+
+// Thread specific
+#ifdef _WIN32
+static HANDLE service_thread_handle = NULL;
+#else
+static pthread_t service_thread_id;
+#endif
+static struct lws_context *g_context = NULL;
 
 static const char *client_hello_json =
     "{"
@@ -302,6 +320,17 @@ static int callback_wsmate(
     return 0;
 }
 
+// Service thread function
+static void *service_thread_func(void *arg) {
+    struct lws_context *context = (struct lws_context *)arg;
+    lwsl_user("Service thread started.\n");
+    while (!interrupted && context) {
+        lws_service(context, 50); // Original timeout was 50ms
+    }
+    lwsl_user("Service thread exiting.\n");
+    return NULL;
+}
+
 static struct lws_protocols protocols[] = {
     {
         "default", // Protocol name
@@ -317,9 +346,10 @@ int main(int argc, char **argv) {
     // Set console to UTF-8 to display Chinese characters correctly
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    // Register signal handler for SIGINT (Ctrl+C)
+    signal(SIGINT, sigint_handler);
     struct lws_context_creation_info info;
     struct lws_client_connect_info conn_info;
-    struct lws_context *context;
 
     memset(&info, 0, sizeof(info));
     info.port = CONTEXT_PORT_NO_LISTEN;
@@ -332,14 +362,14 @@ int main(int argc, char **argv) {
     // info.ssl_private_key_filepath = NULL;
     // info.ssl_ca_filepath = "path/to/ca-cert.pem"; // Optional: for self-signed certs
 
-    context = lws_create_context(&info);
-    if (!context) {
+    g_context = lws_create_context(&info);
+    if (!g_context) {
         fprintf(stderr, "lws_create_context failed\n");
         return 1;
     }
 
     memset(&conn_info, 0, sizeof(conn_info));
-    conn_info.context = context;
+    conn_info.context = g_context;
     conn_info.address = SERVER_ADDRESS;
     conn_info.port = SERVER_PORT;
     conn_info.path = SERVER_PATH;
@@ -353,14 +383,39 @@ int main(int argc, char **argv) {
     fprintf(stdout, "Connecting to %s:%d%s\n", conn_info.address, conn_info.port, conn_info.path);
     if (!lws_client_connect_via_info(&conn_info)) {
         fprintf(stderr, "lws_client_connect_via_info failed\n");
-        lws_context_destroy(context);
+        lws_context_destroy(g_context);
+        g_context = NULL;
         return 1;
     }
 
     wsi_global = *conn_info.pwsi; // Ensure wsi_global is set immediately if connect_via_info doesn't block
 
+    // Start the service thread
+#ifdef _WIN32
+    service_thread_handle = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)service_thread_func, g_context, 0, NULL);
+    if (service_thread_handle == NULL) {
+        fprintf(stderr, "Failed to create service thread: %ld\n", GetLastError());
+        lws_context_destroy(g_context);
+        g_context = NULL;
+        return 1;
+    }
+#else
+    if (pthread_create(&service_thread_id, NULL, service_thread_func, g_context) != 0) {
+        perror("Failed to create service thread");
+        lws_context_destroy(g_context);
+        g_context = NULL;
+        return 1;
+    }
+#endif
+
     while (!interrupted && wsi_global) {
-        lws_service(context, 50);
+        // Add a small delay to prevent busy-waiting in the main loop.
+#if defined(_WIN32)
+        Sleep(10); // Sleep 10ms on Windows
+#else
+        usleep(10000); // Sleep 10ms on POSIX
+#endif
+
         unsigned long current_ms = get_current_ms();
 
         if (wsi_global && hello_sent_time > 0 && !server_hello_received) {
@@ -394,7 +449,7 @@ int main(int argc, char **argv) {
 
         // Check if it's time to send a 'wake word detected' message
         if (wsi_global && listen_sent && !wake_word_sent && server_hello_received) {
-            if (time(NULL) - listen_sent_time > WAKE_WORD_SEND_OFFSET_SECONDS) {
+            if (time(NULL) - listen_sent_time > WAKE_WORD_SEND_OFFSET_SECONDS) { // Check time for wake word
                 fprintf(stdout, "Sending 'listen state:detect' (wake word) message after delay...\n");
                 char formatted_ww_message[256];
                 int ww_msg_len;
@@ -458,7 +513,42 @@ int main(int argc, char **argv) {
         }
     }
 
-    fprintf(stdout, "Exiting...\n");
-    lws_context_destroy(context);
+    fprintf(stdout, "Exiting main loop. Cleaning up...\n");
+
+    // Signal the service thread to stop and wait for it
+    interrupted = 1; // Ensure it's set for the service thread
+
+    if (g_context) {
+        lwsl_user("Cancelling service for context from main thread.\n");
+        lws_cancel_service(g_context); // Wake up lws_service in the other thread
+    }
+
+#ifdef _WIN32
+    if (service_thread_handle) {
+        lwsl_user("Waiting for service thread to join (Windows)...\n");
+        WaitForSingleObject(service_thread_handle, INFINITE);
+        CloseHandle(service_thread_handle);
+        service_thread_handle = NULL;
+        lwsl_user("Service thread joined (Windows).\n");
+    }
+#else
+    // Check if service_thread_id was initialized (i.e., thread creation was attempted)
+    // and g_context was valid when pthread_create was called.
+    if (g_context && service_thread_id != 0) { // service_thread_id would be non-zero if pthread_create was attempted
+        lwsl_user("Waiting for service thread to join (POSIX)...\n");
+        void* res;
+        pthread_join(service_thread_id, &res);
+        // service_thread_id = 0; // Mark as joined, optional for pthreads
+        lwsl_user("Service thread joined (POSIX).\n");
+    }
+#endif
+
+    if (g_context) {
+        lws_context_destroy(g_context);
+        g_context = NULL;
+        fprintf(stdout, "lws_context_destroyed\n");
+    }
+
+    fprintf(stdout, "wsmate finished.\n");
     return 0;
 }
