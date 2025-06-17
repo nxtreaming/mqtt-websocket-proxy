@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h> // For time()
+#include <time.h>
 #include <libwebsockets.h>
 #include "cjson/cJSON.h"
 
@@ -18,6 +18,8 @@ static int interrupted = 0;
 static struct lws *wsi_global = NULL;
 static time_t hello_sent_time = 0;
 static int server_hello_received = 0;
+static int listen_sent = 0;
+static char g_session_id[64] = {0}; // Global to store session_id
 
 #define HELLO_TIMEOUT_SECONDS 10
 
@@ -74,6 +76,8 @@ static int callback_wsmate(
             }
             hello_sent_time = time(NULL);
             server_hello_received = 0;
+            listen_sent = 0;
+            g_session_id[0] = '\0'; // Clear session_id on new connection
             break;
 
         case LWS_CALLBACK_CLIENT_RECEIVE:
@@ -93,10 +97,50 @@ static int callback_wsmate(
                     fprintf(stdout, "  Response type: %s\n", type_item->valuestring);
                     if (strcmp(type_item->valuestring, "hello") == 0) {
                         const cJSON *transport_item = cJSON_GetObjectItemCaseSensitive(json_response, "transport");
+                        const cJSON *session_id_item = cJSON_GetObjectItemCaseSensitive(json_response, "session_id");
+                        if (cJSON_IsString(session_id_item) && (session_id_item->valuestring != NULL)) {
+                            strncpy(g_session_id, session_id_item->valuestring, sizeof(g_session_id) - 1);
+                            g_session_id[sizeof(g_session_id) - 1] = '\0'; // Ensure null termination
+                            fprintf(stdout, "  Session ID: %s (stored)\n", g_session_id);
+                        } else {
+                            fprintf(stdout, "  No session_id in hello message or not a string.\n");
+                            // g_session_id remains empty or as before
+                        }
+
                         if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
                             if (!server_hello_received) { // Process only if hello not already marked as received
                                 server_hello_received = 1;
                                 fprintf(stdout, "Server HELLO received and validated.\n");
+
+                                // Now, send the 'listen' message if not already sent
+                                // g_session_id should be populated by now
+                                if (!listen_sent) {
+                                    char formatted_listen_message[256];
+                                    int listen_msg_len;
+                                    if (strlen(g_session_id) > 0) {
+                                        listen_msg_len = snprintf(formatted_listen_message, sizeof(formatted_listen_message),
+                                                 "{\"type\": \"listen\", \"session_id\": \"%s\", \"state\": \"start\", \"mode\": \"manual\"}",
+                                                 g_session_id);
+                                    } else {
+                                        // Fallback if session_id wasn't received - this might not be ideal for the server
+                                        listen_msg_len = snprintf(formatted_listen_message, sizeof(formatted_listen_message),
+                                                 "{\"type\": \"listen\", \"state\": \"start\", \"mode\": \"manual\"}");
+                                    }
+
+                                    if (listen_msg_len > 0 && listen_msg_len < sizeof(formatted_listen_message)) {
+                                        unsigned char listen_buf[LWS_PRE + MAX_PAYLOAD_SIZE];
+                                        memcpy(&listen_buf[LWS_PRE], formatted_listen_message, listen_msg_len);
+                                        fprintf(stdout, "Attempting to send 'listen' message: %s\n", formatted_listen_message);
+                                        if (lws_write(wsi, &listen_buf[LWS_PRE], listen_msg_len, LWS_WRITE_TEXT) < 0) {
+                                            fprintf(stderr, "Error sending 'listen' message\n");
+                                        } else {
+                                            fprintf(stdout, "'listen' message sent successfully.\n");
+                                            listen_sent = 1;
+                                        }
+                                    } else {
+                                        fprintf(stderr, "Error: Could not format 'listen' message or it's too long.\n");
+                                    }
+                                }
                             }
                         } else {
                              fprintf(stderr, "Server HELLO received, but transport is not 'websocket' or invalid. Ignoring.\n");
@@ -104,17 +148,74 @@ static int callback_wsmate(
                     }
                 }
 
-                const cJSON *session_id_item = cJSON_GetObjectItemCaseSensitive(json_response, "session_id");
-                if (cJSON_IsString(session_id_item) && (session_id_item->valuestring != NULL)) {
-                    fprintf(stdout, "  Session ID: %s\n", session_id_item->valuestring);
-                }
-                
-                if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "mcp") == 0) {
+            if (type_item && cJSON_IsString(type_item) && strcmp(type_item->valuestring, "mcp") == 0) {
                     const cJSON *payload = cJSON_GetObjectItemCaseSensitive(json_response, "payload");
                     if (payload) {
-                        char *payload_str = cJSON_Print(payload);
-                        fprintf(stdout, "  MCP Payload: %s\n", payload_str);
-                        free(payload_str);
+                        char *payload_str = cJSON_PrintUnformatted(payload); // Use Unformatted for easier parsing if needed later
+                        fprintf(stdout, "  MCP Payload: %s\n", payload_str ? payload_str : "(null)");
+
+                        // Check if this MCP message is a request (has an 'id')
+                        const cJSON *mcp_id_item = cJSON_GetObjectItemCaseSensitive(payload, "id");
+                        if (mcp_id_item && (cJSON_IsNumber(mcp_id_item) || cJSON_IsString(mcp_id_item))) {
+                            char mcp_id_str[32];
+                            if (cJSON_IsNumber(mcp_id_item)) {
+                                snprintf(mcp_id_str, sizeof(mcp_id_str), "%d", mcp_id_item->valueint);
+                            } else { // IsString
+                                strncpy(mcp_id_str, mcp_id_item->valuestring, sizeof(mcp_id_str) - 1);
+                                mcp_id_str[sizeof(mcp_id_str) - 1] = '\0';
+                            }
+
+                            fprintf(stdout, "MCP request received (id: %s), sending wrapped MCP success response...\n", mcp_id_str);
+
+                            char inner_rpc_response_payload_str[128];
+                            // Corrected snprintf for id: if it's a string, it needs quotes in JSON.
+                            // Simpler: always treat id as number for response as per many RPC specs, or ensure quotes if string.
+                            // For now, let's assume numeric or string ID is fine in response if formatted correctly.
+                            // Re-simplifying for numeric ID as it's most common for JSON-RPC id.
+                            // If server sends string ID, it expects string ID back. Let's handle that.
+                            
+                            char rpc_id_component[48]; // Buffer for the ID part of JSON-RPC, including quotes if string
+                            if (cJSON_IsString(mcp_id_item)) {
+                                snprintf(rpc_id_component, sizeof(rpc_id_component), "\"%s\"", mcp_id_item->valuestring);
+                            } else { // IsNumber
+                                snprintf(rpc_id_component, sizeof(rpc_id_component), "%d", mcp_id_item->valueint);
+                            }
+
+                            const cJSON *method_item = cJSON_GetObjectItemCaseSensitive(payload, "method");
+                            if (method_item && cJSON_IsString(method_item) && strcmp(method_item->valuestring, "tools/list") == 0) {
+                                snprintf(inner_rpc_response_payload_str, sizeof(inner_rpc_response_payload_str),
+                                     "{\"jsonrpc\": \"2.0\", \"id\": %s, \"result\": {\"tools\": []}}", rpc_id_component);
+                                fprintf(stdout, "Responding to 'tools/list' with empty tool list.\n");
+                            } else {
+                                snprintf(inner_rpc_response_payload_str, sizeof(inner_rpc_response_payload_str),
+                                     "{\"jsonrpc\": \"2.0\", \"id\": %s, \"result\": {}}", rpc_id_component);
+                            }
+
+
+                            char full_mcp_response_str[LWS_PRE + MAX_PAYLOAD_SIZE]; // Reuse MAX_PAYLOAD_SIZE for outer message too
+                            int written_len;
+                            if (strlen(g_session_id) > 0) {
+                                written_len = snprintf(full_mcp_response_str, sizeof(full_mcp_response_str),
+                                         "{\"type\": \"mcp\", \"session_id\": \"%s\", \"payload\": %s}",
+                                         g_session_id, inner_rpc_response_payload_str);
+                            } else { // Fallback if session_id somehow wasn't captured (should not happen if server sends it)
+                                written_len = snprintf(full_mcp_response_str, sizeof(full_mcp_response_str),
+                                         "{\"type\": \"mcp\", \"payload\": %s}",
+                                         inner_rpc_response_payload_str);
+                            }
+
+                            if (written_len > 0 && written_len < sizeof(full_mcp_response_str)) {
+                                unsigned char mcp_resp_buf[LWS_PRE + MAX_PAYLOAD_SIZE];
+                                memcpy(&mcp_resp_buf[LWS_PRE], full_mcp_response_str, written_len);
+                                fprintf(stdout, "Sending JSON message:\n%s\n", full_mcp_response_str);
+                                if (lws_write(wsi, &mcp_resp_buf[LWS_PRE], written_len, LWS_WRITE_TEXT) < 0) {
+                                    fprintf(stderr, "Error sending MCP response\n");
+                                }
+                            } else {
+                                fprintf(stderr, "Error: MCP response message too long or snprintf error.\n");
+                            }
+                        }
+                        if (payload_str) free(payload_str);
                     }
                 }
                 cJSON_Delete(json_response);
