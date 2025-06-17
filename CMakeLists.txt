@@ -398,7 +398,12 @@ target_include_directories(mqtt-websocket-proxy PRIVATE
 # Platform-specific link libraries (non-Windows)
 if(UNIX AND NOT APPLE)
     target_link_libraries(mqtt-websocket-proxy PRIVATE pthread dl)
-elseif(APPLE)
+endif()
+
+# Add the wsmate client subdirectory
+add_subdirectory(client)
+
+if(APPLE)
     target_link_libraries(mqtt-websocket-proxy PRIVATE pthread)
 endif()
 
