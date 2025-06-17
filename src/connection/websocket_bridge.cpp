@@ -328,10 +328,6 @@ int WebSocketBridge::SendMessage(const std::string& message) {
     return error::SUCCESS;
 }
 
-int WebSocketBridge::SendMQTTMessage(const std::string& topic, const std::string& payload, const std::string& client_id) {
-    std::string json_message = CreateMQTTJSON(topic, payload, client_id);
-    return SendMessage(json_message);
-}
 
 int WebSocketBridge::SendBinaryData(const unsigned char* data, size_t len) {
     if (!connected_.load() || !websocket_) {
@@ -529,19 +525,6 @@ int WebSocketBridge::ParseWebSocketURL(const std::string& url, std::string& host
     return error::SUCCESS;
 }
 
-std::string WebSocketBridge::CreateMQTTJSON(const std::string& topic, const std::string& payload, const std::string& client_id) {
-    nlohmann::json json_msg;
-    
-    json_msg["type"] = "mqtt_message";
-    json_msg["topic"] = topic;
-    json_msg["payload"] = payload;
-    json_msg["client_id"] = client_id;
-    json_msg["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    json_msg["qos"] = 0;
-    
-    return json_msg.dump();
-}
 
 void WebSocketBridge::ProcessSendQueue() {
     std::lock_guard<std::mutex> lock(send_queue_mutex_);

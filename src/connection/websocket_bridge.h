@@ -97,16 +97,6 @@ public:
     int SendBinaryData(const unsigned char* data, size_t len);
     
     /**
-     * @brief Send MQTT message as JSON to WebSocket server
-     * @param topic MQTT topic
-     * @param payload MQTT payload
-     * @param client_id Source client ID
-     * @return Error code, 0 indicates success
-     */
-    int SendMQTTMessage(const std::string& topic, const std::string& payload, const std::string& client_id);
-    
-    
-    /**
      * @brief Check if connected to WebSocket server
      * @return true if connected
      */

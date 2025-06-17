@@ -188,7 +188,7 @@ int MQTTConnection::SendMQTTPacket(const std::vector<uint8_t>& buffer) {
 void MQTTConnection::ForwardMqttMessageToWebSocket(const std::string& topic, const std::string& payload) {
     if (websocket_bridge_ && websocket_bridge_->IsConnected()) {
         LOG_DEBUG("Forwarding MQTT message from client " + client_id_ + " to WebSocket: topic=" + topic);
-        int ret = websocket_bridge_->SendMQTTMessage(topic, payload, client_id_);
+        int ret = websocket_bridge_->SendMessage(payload);
         if (ret != error::SUCCESS) {
             LOG_ERROR("Failed to forward message to WebSocket for client " + client_id_ + ": " + error::GetErrorMessage(ret));
         }
