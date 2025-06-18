@@ -611,8 +611,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 
                 // Send the message with proper WebSocket framing
                 int write_result = lws_write(wsi, buf, wlen, write_flags);
-                
-                // Log the result
                 if (write_result < 0) {
                     fprintf(stderr, "Error %d writing to WebSocket\n", write_result);
                     return -1;
@@ -623,8 +621,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 
                 // Clear the pending write flag since we've sent the message
                 write_state->pending_write = 0;
-                fprintf(stdout, "Successfully sent %s message\n", 
-                        write_state->write_is_binary ? "binary" : "text");
+                fprintf(stdout, "Successfully sent %s message\n", write_state->write_is_binary ? "binary" : "text");
                 
                 // Update connection state based on what was sent
                 if (!write_state->hello_sent) {
@@ -663,7 +660,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     return 0;
 }
 
-// Thread function for the service loop
 #ifdef _WIN32
 static DWORD WINAPI service_thread_func(LPVOID arg)
 #else
@@ -755,6 +751,8 @@ int main(int argc, char **argv) {
     }
 #endif
 
+    int no_connection_printed = 0;
+
     while (!interrupted) {
         // Add a small delay to prevent busy-waiting in the main loop.
 #if defined(_WIN32)
@@ -770,7 +768,10 @@ int main(int argc, char **argv) {
         if (g_wsi)
             conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
         if (!conn_state) {
-            fprintf(stderr, "Error: No connection state in main loop\n");
+            if (!no_connection_printed) {
+                fprintf(stderr, "Error: No connection state in main loop, trying...\n");
+                no_connection_printed = 1;
+            }
             continue;
         }
 
