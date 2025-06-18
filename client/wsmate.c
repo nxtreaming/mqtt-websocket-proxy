@@ -12,19 +12,8 @@
 #include <unistd.h>
 #endif
 
-// Define close status if not already defined
-#ifndef LWS_CLOSE_STATUS_GOING_AWAY
-#define LWS_CLOSE_STATUS_GOING_AWAY 1001
-#endif
 #include "cjson/cJSON.h"
 #include <signal.h>
-
-// Forward declarations
-#ifdef _WIN32
-static DWORD WINAPI service_thread_func(LPVOID arg);
-#else
-static void *service_thread_func(void *arg);
-#endif
 
 //
 // Note:
@@ -33,6 +22,11 @@ static void *service_thread_func(void *arg);
 // There is 180s timeout if no any message is received:
 //   Client need not implement this feature, websocket server will handle it
 //
+
+// Define close status if not already defined
+#ifndef LWS_CLOSE_STATUS_GOING_AWAY
+#define LWS_CLOSE_STATUS_GOING_AWAY 1001
+#endif
 
 #define MAX_PAYLOAD_SIZE 1024
 #define HELLO_TIMEOUT_SECONDS 10
