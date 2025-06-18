@@ -19,6 +19,13 @@
 #include "cjson/cJSON.h"
 #include <signal.h>
 
+// Forward declarations
+#ifdef _WIN32
+static DWORD WINAPI service_thread_func(LPVOID arg);
+#else
+static void *service_thread_func(void *arg);
+#endif
+
 //
 // Note:
 // 
@@ -402,14 +409,10 @@ static void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
                 return;
             }
             
-            // Prepare response with proper JSON formatting
-            static const char *response_fmt = 
-                "{\"session_id\":\"%s\","
-                "\"type\":\"mcp\","
-                "\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{}}}";
-            
             // Send formatted response
-            if (send_json_message(wsi, conn_state, response_fmt, conn_state->session_id, id) != 0) {
+            if (send_json_message(wsi, conn_state, 
+                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{}}}", 
+                conn_state->session_id, id_num) != 0) {
                 fprintf(stderr, "Error: Failed to send MCP response\n");
             }
         } else if (strcmp(method_str, "tools/list") == 0) {
@@ -419,17 +422,10 @@ static void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
                 return;
             }
             
-            // Prepare tools/list response with proper JSON formatting
-            static const char *response_fmt = 
-                "{\"session_id\":\"%s\","
-                "\"type\":\"mcp\","
-                "\"payload\":"
-                "{\"jsonrpc\":\"2.0\","
-                "\"id\":%d,"
-                "\"result\":{\"tools\":[]}}}";
-            
             // Send formatted response
-            if (send_json_message(wsi, conn_state, response_fmt, conn_state->session_id, id) != 0) {
+            if (send_json_message(wsi, conn_state, 
+                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}}", 
+                conn_state->session_id, id_num) != 0) {
                 fprintf(stderr, "Error: Failed to send tools/list response\n");
             }
         } else {
@@ -438,50 +434,29 @@ static void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
     }
 }
 
-static void handle_stt_message(struct lws *wsi, cJSON *json_response) {
+// Generic handler for simple message types (STT, LLM) that just need logging
+static void handle_generic_message(struct lws *wsi, cJSON *json_response, const char *msg_type) {
     connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
     if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_stt_message\n");
+        fprintf(stderr, "Error: No connection state in handle_%s_message\n", msg_type);
         return;
     }
     
-    fprintf(stdout, "  Received STT message.\n");
+    fprintf(stdout, "  Received %s message.\n", msg_type);
     
-    // Log the STT message
+    // Log the message
     char *json_str = cJSON_PrintUnformatted(json_response);
     if (json_str) {
-        fprintf(stdout, "  STT Message: %s\n", json_str);
-        free(json_str);
-    }
-}
-
-static void handle_llm_message(struct lws *wsi, cJSON *json_response) {
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_llm_message\n");
-        return;
-    }
-    
-    fprintf(stdout, "  Received LLM message.\n");
-    
-    // Log the LLM message
-    char *json_str = cJSON_PrintUnformatted(json_response);
-    if (json_str) {
-        fprintf(stdout, "  LLM Message: %s\n", json_str);
+        fprintf(stdout, "  %s Message: %s\n", msg_type, json_str);
         free(json_str);
     }
 }
 
 static void handle_tts_message(struct lws *wsi, cJSON *json_response) {
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_tts_message\n");
-        return;
-    }
+    // First use the generic handler for basic logging
+    handle_generic_message(wsi, json_response, "TTS");
     
-    fprintf(stdout, "  Received TTS message.\n");
-    
-    // Check for audio data
+    // Then handle TTS-specific fields
     const cJSON *audio_item = cJSON_GetObjectItemCaseSensitive(json_response, "audio");
     if (cJSON_IsString(audio_item) && audio_item->valuestring) {
         fprintf(stdout, "    Received audio data (base64, %zu chars)\n", strlen(audio_item->valuestring));
@@ -492,6 +467,7 @@ static void handle_tts_message(struct lws *wsi, cJSON *json_response) {
     if (cJSON_IsString(state_item) && state_item->valuestring) {
         fprintf(stdout, "    TTS State: %s\n", state_item->valuestring);
     }
+    
     const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(json_response, "text");
     if (cJSON_IsString(text_item) && text_item->valuestring) {
         fprintf(stdout, "    TTS Text (e.g. for sentence_start): %s\n", text_item->valuestring);
@@ -527,17 +503,6 @@ static int callback_wsmate(
             // Initialize connection state
             memset(conn_state, 0, sizeof(connection_state_t));
             conn_state->connected = 1;
-            conn_state->hello_sent = 0;
-            conn_state->server_hello_received = 0;
-            conn_state->listen_sent = 0;
-            conn_state->wake_word_sent = 0;
-            conn_state->abort_sent = 0;
-            conn_state->binary_frames_sent_count = 0;
-            conn_state->last_binary_frame_send_time_ms = 0;
-            conn_state->pending_write = 0;
-            conn_state->write_len = 0;
-            conn_state->write_is_binary = 0;
-            memset(conn_state->session_id, 0, sizeof(conn_state->session_id));
                 
             // Only send hello if not already sent
             if (!conn_state->hello_sent) {
@@ -612,10 +577,10 @@ static int callback_wsmate(
                             handle_mcp_message(wsi, json_response);
                         }
                         else if (strcmp(msg_type, "stt") == 0) {
-                            handle_stt_message(wsi, json_response);
+                            handle_generic_message(wsi, json_response, "STT");
                         }
                         else if (strcmp(msg_type, "llm") == 0) {
-                            handle_llm_message(wsi, json_response);
+                            handle_generic_message(wsi, json_response, "LLM");
                         }
                         else if (strcmp(msg_type, "tts") == 0) {
                             handle_tts_message(wsi, json_response);
@@ -660,32 +625,6 @@ static int callback_wsmate(
                 enum lws_write_protocol write_flags = write_state->write_is_binary ? 
                     LWS_WRITE_BINARY : LWS_WRITE_TEXT;
                 
-                // Ensure the message is properly null-terminated for text messages
-                if (!write_state->write_is_binary) {
-                    // For text messages, ensure null termination for logging
-                    if (wlen > 0 && wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
-                        buf[wlen] = '\0';
-                    }
-                    fprintf(stdout, "Sending text message (%zu bytes): %.*s\n", 
-                            wlen, (int)wlen, buf);
-                } else {
-                    fprintf(stdout, "Sending binary data: %zu bytes\n", wlen);
-                }
-                
-                // For text messages, ensure we have a proper UTF-8 string
-                if (!write_state->write_is_binary) {
-                    // Log the exact UTF-8 text we're about to send
-                    fprintf(stdout, "Sending WebSocket text frame (%zu bytes): %.*s\n",
-                           wlen, (int)wlen, (const char *)buf);
-                    
-                    // Ensure the message is properly null-terminated for logging
-                    if (wlen > 0 && wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
-                        write_state->write_buf[LWS_PRE + wlen] = '\0';
-                    }
-                } else {
-                    fprintf(stdout, "Sending WebSocket binary frame (%zu bytes)\n", wlen);
-                }
-
                 // Ensure we have a valid write length
                 if (wlen == 0) {
                     fprintf(stderr, "Error: Attempted to send zero-length message\n");
@@ -696,59 +635,38 @@ static int callback_wsmate(
                 // For text messages, ensure proper null termination for logging
                 if (!write_state->write_is_binary) {
                     if (wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
-                        write_state->write_buf[LWS_PRE + wlen] = '\0';
+                        buf[wlen] = '\0';
+                        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
+                               (unsigned int)wlen, (const char *)buf);
                     } else {
                         fprintf(stderr, "Error: Message too long for buffer\n");
                         write_state->pending_write = 0;
                         break;
                     }
-                }
-                
-                // Save the message for logging before sending
-                char *saved_message = NULL;
-                size_t saved_len = 0;
-                
-                if (!write_state->write_is_binary) {
-                    saved_message = (char *)malloc(wlen + 1);
-                    if (saved_message) {
-                        memcpy(saved_message, buf, wlen);
-                        saved_message[wlen] = '\0';
-                        saved_len = wlen;
-                        fprintf(stdout, "Sending WebSocket text frame (%zu bytes): %s\n", wlen, saved_message);
-                    } else {
-                        fprintf(stdout, "Sending WebSocket text frame (%zu bytes)\n", wlen);
-                    }
                 } else {
-                    fprintf(stdout, "Sending WebSocket binary frame (%zu bytes)\n", wlen);
+                    fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)wlen);
                 }
                 
                 // Send the message with proper WebSocket framing
-                int write_result = lws_write(wsi, (unsigned char *)buf, wlen, write_flags);
+                int write_result = lws_write(wsi, buf, wlen, write_flags);
                 
-                // Log the result using our saved message if available
+                // Log the result
                 if (write_result < 0) {
                     fprintf(stderr, "Error %d writing to WebSocket\n", write_result);
-                    if (saved_message) free(saved_message);
                     return -1;
                 } else if (write_result != (int)wlen) {
-                    fprintf(stderr, "Partial write: %d of %zu bytes written\n", write_result, wlen);
-                    if (saved_message) free(saved_message);
+                    fprintf(stderr, "Partial write: %d of %u bytes written\n", write_result, (unsigned int)wlen);
                     return -1;
                 }
                 
                 // Clear the pending write flag since we've sent the message
                 write_state->pending_write = 0;
                 
-                // Log successful send using our saved message
+                // Log successful send
                 if (!write_state->write_is_binary) {
-                    if (saved_message) {
-                        fprintf(stdout, "Successfully sent text message: %.*s\n", (int)saved_len, saved_message);
-                        free(saved_message);
-                    } else {
-                        fprintf(stdout, "Successfully sent text message\n");
-                    }
+                    fprintf(stdout, "Successfully sent text message\n");
                 } else {
-                    fprintf(stdout, "Successfully sent binary message (%zu bytes)\n", wlen);
+                    fprintf(stdout, "Successfully sent binary message (%u bytes)\n", (unsigned int)wlen);
                 }
                 
                 // Update connection state based on what was sent
@@ -789,6 +707,7 @@ static int callback_wsmate(
     return 0;
 }
 
+// Thread function for the service loop
 #ifdef _WIN32
 static DWORD WINAPI service_thread_func(LPVOID arg)
 #else
