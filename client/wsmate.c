@@ -44,6 +44,14 @@
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
 static int interrupted = 0;
+// Audio parameters structure
+typedef struct {
+    char format[32];           // Audio format (e.g., "opus")
+    int sample_rate;           // Sample rate in Hz (e.g., 16000, 24000)
+    int channels;              // Number of audio channels (e.g., 1, 2)
+    int frame_duration;        // Frame duration in ms (e.g., 60)
+} audio_params_t;
+
 // Connection state structure
 typedef struct {
     int connected;               // Whether we're connected
@@ -57,6 +65,7 @@ typedef struct {
     int binary_frames_sent_count;// How many binary frames we've sent
     unsigned long last_binary_frame_send_time_ms;  // Last binary frame send time
     char session_id[64];         // Session ID from server
+    audio_params_t audio_params;  // Audio parameters from server
     int pending_write;           // Whether we have data to write
     char write_buf[LWS_PRE + 4096]; // Buffer for pending writes (larger for JSON messages)
     size_t write_len;            // Length of data in write_buf
@@ -99,6 +108,17 @@ static unsigned long get_current_ms(void) {
     return lws_now_usecs() / 1000;
 }
 
+// Helper function to print audio parameters
+static void print_audio_params(const audio_params_t *params) {
+    if (!params) return;
+    
+    fprintf(stdout, "Audio Parameters:\n");
+    fprintf(stdout, "  Format: %s\n", params->format);
+    fprintf(stdout, "  Sample Rate: %d Hz\n", params->sample_rate);
+    fprintf(stdout, "  Channels: %d\n", params->channels);
+    fprintf(stdout, "  Frame Duration: %d ms\n", params->frame_duration);
+}
+
 // Message handler implementations
 static void handle_hello_message(struct lws *wsi, cJSON *json_response) {
     // Get connection state from the user parameter
@@ -110,13 +130,52 @@ static void handle_hello_message(struct lws *wsi, cJSON *json_response) {
 
     const cJSON *transport_item = cJSON_GetObjectItemCaseSensitive(json_response, "transport");
     const cJSON *session_id_item = cJSON_GetObjectItemCaseSensitive(json_response, "session_id");
+    const cJSON *audio_params_item = cJSON_GetObjectItemCaseSensitive(json_response, "audio_params");
     
+    // Parse session ID
     if (cJSON_IsString(session_id_item) && (session_id_item->valuestring != NULL)) {
         strncpy(conn_state->session_id, session_id_item->valuestring, sizeof(conn_state->session_id) - 1);
         conn_state->session_id[sizeof(conn_state->session_id) - 1] = '\0'; // Ensure null termination
         fprintf(stdout, "  Session ID: %s (stored)\n", conn_state->session_id);
     } else {
         fprintf(stdout, "  No session_id in hello message or not a string.\n");
+    }
+    
+    // Parse audio parameters if available
+    if (cJSON_IsObject(audio_params_item)) {
+        const cJSON *format = cJSON_GetObjectItemCaseSensitive(audio_params_item, "format");
+        const cJSON *sample_rate = cJSON_GetObjectItemCaseSensitive(audio_params_item, "sample_rate");
+        const cJSON *channels = cJSON_GetObjectItemCaseSensitive(audio_params_item, "channels");
+        const cJSON *frame_duration = cJSON_GetObjectItemCaseSensitive(audio_params_item, "frame_duration");
+        
+        // Set default values first
+        strncpy(conn_state->audio_params.format, "opus", sizeof(conn_state->audio_params.format));
+        conn_state->audio_params.sample_rate = 16000;
+        conn_state->audio_params.channels = 1;
+        conn_state->audio_params.frame_duration = 60;
+        
+        // Override with server values if provided
+        if (cJSON_IsString(format) && format->valuestring != NULL) {
+            strncpy(conn_state->audio_params.format, format->valuestring, 
+                   sizeof(conn_state->audio_params.format) - 1);
+            conn_state->audio_params.format[sizeof(conn_state->audio_params.format) - 1] = '\0';
+        }
+        
+        if (cJSON_IsNumber(sample_rate)) {
+            conn_state->audio_params.sample_rate = sample_rate->valueint;
+        }
+        
+        if (cJSON_IsNumber(channels)) {
+            conn_state->audio_params.channels = channels->valueint;
+        }
+        
+        if (cJSON_IsNumber(frame_duration)) {
+            conn_state->audio_params.frame_duration = frame_duration->valueint;
+        }
+        
+        // Print the received audio parameters
+        fprintf(stdout, "Received audio parameters from server:\n");
+        print_audio_params(&conn_state->audio_params);
     }
 
     if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
