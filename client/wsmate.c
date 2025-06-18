@@ -124,8 +124,7 @@ static uint64_t get_current_ms(void) {
 #endif
 }
 
-static int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
-    const char* message, size_t message_len, int is_binary) {
+static int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char* message, size_t message_len, int is_binary) {
     if (!wsi || !conn_state || (!message && !is_binary) || message_len == 0 ||
         message_len > sizeof(conn_state->write_buf) - LWS_PRE - 1) {
         fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
@@ -159,8 +158,7 @@ static int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
     return 0;
 }
 
-static int send_json_message(struct lws* wsi, connection_state_t* conn_state,
-    const char* format, ...) {
+static int send_json_message(struct lws* wsi, connection_state_t* conn_state, const char* format, ...) {
     if (!wsi || !conn_state || !format) {
         fprintf(stderr, "Error: Invalid parameters for send_json_message\n");
         return -1;
@@ -448,13 +446,7 @@ static void handle_tts_message(struct lws *wsi, cJSON *json_response) {
     }
 }
 
-static int callback_wsmate(
-    struct lws *wsi,
-    enum lws_callback_reasons reason,
-    void *user,
-    void *in,
-    size_t len)
-{
+static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
             fprintf(stderr, "CLIENT_CONNECTION_ERROR: %s\n", in ? (char *)in : "(null)");
@@ -648,8 +640,7 @@ static int callback_wsmate(
             break;
         }
 
-        case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER:
-        {
+        case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
             unsigned char **p = (unsigned char **)in, *end = (*p) + len;
             if (lws_add_http_header_by_name(wsi, (unsigned char *)"Authorization", (unsigned char *)("Bearer " AUTH_TOKEN), strlen("Bearer " AUTH_TOKEN) , p, end)) {
                 return -1;
