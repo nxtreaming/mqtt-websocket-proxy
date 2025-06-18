@@ -236,10 +236,10 @@ static int send_ws_message(struct lws *wsi, connection_state_t *conn_state,
     
     // Log the message we're about to send
     if (!is_binary) {
-        fprintf(stdout, "Sending WebSocket text frame (%zu bytes): %s\n",
-               message_len, (const char *)(conn_state->write_buf + LWS_PRE));
+        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
+               (unsigned int)message_len, (const char *)(conn_state->write_buf + LWS_PRE));
     } else {
-        fprintf(stdout, "Sending WebSocket binary frame (%zu bytes)\n", message_len);
+        fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
     }
     
     // Schedule the write
@@ -636,15 +636,11 @@ static int callback_wsmate(
                 if (!write_state->write_is_binary) {
                     if (wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
                         buf[wlen] = '\0';
-                        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
-                               (unsigned int)wlen, (const char *)buf);
                     } else {
                         fprintf(stderr, "Error: Message too long for buffer\n");
                         write_state->pending_write = 0;
                         break;
                     }
-                } else {
-                    fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)wlen);
                 }
                 
                 // Send the message with proper WebSocket framing
@@ -661,13 +657,8 @@ static int callback_wsmate(
                 
                 // Clear the pending write flag since we've sent the message
                 write_state->pending_write = 0;
-                
-                // Log successful send
-                if (!write_state->write_is_binary) {
-                    fprintf(stdout, "Successfully sent text message\n");
-                } else {
-                    fprintf(stdout, "Successfully sent binary message (%u bytes)\n", (unsigned int)wlen);
-                }
+                fprintf(stdout, "Successfully sent %s message\n", 
+                        write_state->write_is_binary ? "binary" : "text");
                 
                 // Update connection state based on what was sent
                 if (!write_state->hello_sent) {
