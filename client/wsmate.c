@@ -890,12 +890,6 @@ int main(int argc, char **argv) {
 #endif
 
     if (g_context) {
-        // Free the connection state
-        if (protocols[0].user) {
-            free(protocols[0].user);
-            protocols[0].user = NULL;
-        }
-        
         lws_context_destroy(g_context);
         g_context = NULL;
         fprintf(stdout, "lws_context_destroyed\n");
