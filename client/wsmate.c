@@ -40,8 +40,8 @@
 #define SERVER_PATH "/xiaozhi/v1"
 
 #define AUTH_TOKEN "testtoken"
-#define DEVICE_ID "74:3A:F4:36:F2:D1"
-#define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF21"
+#define DEVICE_ID "74:3A:F4:36:F2:D2"
+#define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
 static int interrupted = 0;
 // Connection state structure
@@ -938,12 +938,12 @@ int main(int argc, char **argv) {
                 int abort_msg_len;
                 if (conn_state && conn_state->session_id[0] != '\0') {
                     abort_msg_len = snprintf(formatted_abort_message, sizeof(formatted_abort_message),
-                                             "{\"type\": \"abort\", \"session_id\": \"%s\", \"reason\": \"client_initiated_test\"}",
+                                             "{\"type\": \"abort\", \"session_id\": \"%s\", \"reason\": \"wake_word_detected\"}",
                                              conn_state->session_id);
                 } else {
                     // Fallback if session_id wasn't received - less ideal for abort
                     abort_msg_len = snprintf(formatted_abort_message, sizeof(formatted_abort_message),
-                                             "{\"type\": \"abort\", \"reason\": \"client_initiated_test\"}");
+                                             "{\"type\": \"abort\", \"reason\": \"wake_word_detected\"}");
                 }
 
                 if (abort_msg_len > 0 && abort_msg_len < sizeof(formatted_abort_message)) {
