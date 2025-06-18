@@ -116,15 +116,6 @@ static const char *hello_msg =
         "\"channels\":1,"
         "\"frame_duration\":60}}";
 
-// Forward declarations of helper functions
-static int send_ws_message(struct lws *wsi, connection_state_t *conn_state, 
-                          const char *message, size_t message_len, int is_binary);
-static int send_json_message(struct lws *wsi, connection_state_t *conn_state, 
-                            const char *format, ...);
-static int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, size_t frame_size);
-static int send_wake_word_message(struct lws *wsi, connection_state_t *conn_state, const char *wake_word_text);
-static int send_abort_message(struct lws *wsi, connection_state_t *conn_state, const char *reason);
-
 static void sigint_handler(int sig) {
     (void)sig;
     fprintf(stdout, "\nCaught SIGINT/Ctrl+C, initiating shutdown...\n");
@@ -141,6 +132,70 @@ static uint64_t get_current_ms(void) {
 #else
     return lws_now_usecs() / 1000;
 #endif
+}
+
+static int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
+    const char* message, size_t message_len, int is_binary) {
+    if (!wsi || !conn_state || (!message && !is_binary) || message_len == 0 ||
+        message_len > sizeof(conn_state->write_buf) - LWS_PRE - 1) {
+        fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
+        return -1;
+    }
+
+    // Copy the message to the write buffer after LWS_PRE bytes
+    memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
+
+    // For text messages, ensure null termination for logging
+    if (!is_binary && message_len < sizeof(conn_state->write_buf) - LWS_PRE - 1) {
+        conn_state->write_buf[LWS_PRE + message_len] = '\0';
+    }
+
+    conn_state->write_len = message_len;
+    conn_state->write_is_binary = is_binary;
+    conn_state->pending_write = 1;
+
+    // Log the message we're about to send
+    if (!is_binary) {
+        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
+            (unsigned int)message_len, (const char*)(conn_state->write_buf + LWS_PRE));
+    }
+    else {
+        fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
+    }
+
+    // Schedule the write
+    lws_callback_on_writable(wsi);
+
+    return 0;
+}
+
+static int send_json_message(struct lws* wsi, connection_state_t* conn_state,
+    const char* format, ...) {
+    if (!wsi || !conn_state || !format) {
+        fprintf(stderr, "Error: Invalid parameters for send_json_message\n");
+        return -1;
+    }
+
+    va_list args;
+    va_start(args, format);
+
+    // Format the message
+    int msg_len = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+
+    if (msg_len <= 0 || (size_t)msg_len >= sizeof(conn_state->write_buf) - LWS_PRE - 1) {
+        fprintf(stderr, "Error: Message formatting failed or message too long\n");
+        return -1;
+    }
+
+    va_start(args, format);
+    vsnprintf((char*)(conn_state->write_buf + LWS_PRE),
+        sizeof(conn_state->write_buf) - LWS_PRE - 1, format, args);
+    va_end(args);
+
+    return send_ws_message(wsi, conn_state,
+        (const char*)(conn_state->write_buf + LWS_PRE),
+        (size_t)msg_len, 0);
 }
 
 static int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, size_t frame_size) {
@@ -205,71 +260,6 @@ static void print_audio_params(const audio_params_t *params) {
     fprintf(stdout, "  Sample Rate: %d Hz\n", params->sample_rate);
     fprintf(stdout, "  Channels: %d\n", params->channels);
     fprintf(stdout, "  Frame Duration: %d ms\n", params->frame_duration);
-}
-
-// Helper function to prepare and send a WebSocket message
-static int send_ws_message(struct lws *wsi, connection_state_t *conn_state, 
-                          const char *message, size_t message_len, int is_binary) {
-    if (!wsi || !conn_state || (!message && !is_binary) || message_len == 0 ||
-        message_len > sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
-        return -1;
-    }
-    
-    // Copy the message to the write buffer after LWS_PRE bytes
-    memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
-    
-    // For text messages, ensure null termination for logging
-    if (!is_binary && message_len < sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        conn_state->write_buf[LWS_PRE + message_len] = '\0';
-    }
-    
-    conn_state->write_len = message_len;
-    conn_state->write_is_binary = is_binary;
-    conn_state->pending_write = 1;
-    
-    // Log the message we're about to send
-    if (!is_binary) {
-        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
-               (unsigned int)message_len, (const char *)(conn_state->write_buf + LWS_PRE));
-    } else {
-        fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
-    }
-    
-    // Schedule the write
-    lws_callback_on_writable(wsi);
-    
-    return 0;
-}
-
-// Helper function to format and send a JSON message
-static int send_json_message(struct lws *wsi, connection_state_t *conn_state, 
-                            const char *format, ...) {
-    if (!wsi || !conn_state || !format) {
-        fprintf(stderr, "Error: Invalid parameters for send_json_message\n");
-        return -1;
-    }
-    
-    va_list args;
-    va_start(args, format);
-    
-    // Format the message
-    int msg_len = vsnprintf(NULL, 0, format, args);
-    va_end(args);
-    
-    if (msg_len <= 0 || (size_t)msg_len >= sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        fprintf(stderr, "Error: Message formatting failed or message too long\n");
-        return -1;
-    }
-    
-    va_start(args, format);
-    vsnprintf((char *)(conn_state->write_buf + LWS_PRE), 
-             sizeof(conn_state->write_buf) - LWS_PRE - 1, format, args);
-    va_end(args);
-    
-    return send_ws_message(wsi, conn_state, 
-                          (const char *)(conn_state->write_buf + LWS_PRE), 
-                          (size_t)msg_len, 0);
 }
 
 static void handle_hello_message(struct lws *wsi, cJSON *json_response) {
