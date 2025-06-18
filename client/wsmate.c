@@ -846,7 +846,7 @@ int main(int argc, char **argv) {
         // Check if it's time to send an abort message
         if (conn_state->connected && conn_state->listen_sent && 
             conn_state->wake_word_sent && !conn_state->abort_sent &&
-            time(NULL) - conn_state->wake_word_sent_time > ABORT_SEND_OFFSET_SECONDS) {
+            time(NULL) - conn_state->listen_sent_time > ABORT_SEND_OFFSET_SECONDS) {
             fprintf(stdout, "Sending 'abort' message after delay...\n");
             
             if (send_abort_message(g_wsi, conn_state, "wake_word_detected") == 0) {
