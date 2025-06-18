@@ -853,10 +853,6 @@ int main(int argc, char **argv) {
     // Note: We don't need to manually allocate connection_state_t here
     // as libwebsockets will handle it based on the per_session_data_size in protocols[]
     
-    // We don't use pwsi anymore as we manage connection state through user data
-    struct lws *dummy_wsi = NULL;
-    conn_info.pwsi = &dummy_wsi;
-
     fprintf(stdout, "Connecting to %s:%d%s\n", conn_info.address, conn_info.port, conn_info.path);
     if (!lws_client_connect_via_info(&conn_info)) {
         fprintf(stderr, "lws_client_connect_via_info failed\n");
@@ -864,8 +860,6 @@ int main(int argc, char **argv) {
         g_context = NULL;
         return 1;
     }
-
-    // The actual connection will be established asynchronously
 
     // Start service thread
 #ifdef _WIN32
@@ -895,10 +889,14 @@ int main(int argc, char **argv) {
 
         // Get connection state from the active WebSocket instance
         connection_state_t *conn_state = NULL;
-        if (g_wsi) {
+        if (g_wsi)
             conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
+        if (!conn_state) {
+            fprintf(stderr, "Error: No connection state in main loop\n");
+            continue;
         }
-        if (conn_state && conn_state->hello_sent_time > 0 && !conn_state->server_hello_received) {
+
+        if (conn_state->hello_sent_time > 0 && !conn_state->server_hello_received) {
             if (time(NULL) - conn_state->hello_sent_time > HELLO_TIMEOUT_SECONDS) {
                 fprintf(stderr, "Timeout: Server HELLO not received within %d seconds. Closing connection.\n", HELLO_TIMEOUT_SECONDS);
                 if (g_context) {
@@ -914,9 +912,10 @@ int main(int argc, char **argv) {
         }
 
         // Send dummy binary frames after 'listen' is sent and before 'wake word'
-        if (conn_state && conn_state->connected && conn_state->listen_sent && 
+        if (conn_state->connected && conn_state->listen_sent && 
             conn_state->server_hello_received &&
-            !conn_state->wake_word_sent) { // Send binary frames during the "active listening" phase before wake word
+            !conn_state->wake_word_sent) {
+            // Send binary frames during the "active listening" phase before wake word
             if (current_ms - conn_state->last_binary_frame_send_time_ms >= BINARY_FRAME_SEND_INTERVAL_MS) {
                 unsigned char binary_buf[LWS_PRE + DUMMY_BINARY_FRAME_SIZE];
                 // Fill with some dummy data
@@ -940,13 +939,14 @@ int main(int argc, char **argv) {
         }
 
         // Check if it's time to send a 'wake word detected' message
-        if (conn_state && conn_state->connected && conn_state->listen_sent && 
+        if (conn_state->connected && conn_state->listen_sent && 
             !conn_state->wake_word_sent && conn_state->server_hello_received) {
-            if (time(NULL) - conn_state->listen_sent_time > WAKE_WORD_SEND_OFFSET_SECONDS) { // Check time for wake word
+            // Check time for wake word
+            if (time(NULL) - conn_state->listen_sent_time > WAKE_WORD_SEND_OFFSET_SECONDS) {
                 fprintf(stdout, "Sending 'listen state:detect' (wake word) message after delay...\n");
                 char formatted_ww_message[256];
                 int ww_msg_len;
-                if (conn_state && conn_state->session_id[0] != '\0') {
+                if (conn_state->session_id[0] != '\0') {
                     ww_msg_len = snprintf(formatted_ww_message, sizeof(formatted_ww_message),
                                              "{\"type\": \"listen\", \"session_id\": \"%s\", \"state\": \"detect\", \"text\": \"\xE4\xBD\xA0\xE5\xA5\xBD\xE5\xB0\x8F\xE6\x98\x8E\"}", // "你好小明" in UTF-8
                                              conn_state->session_id);
@@ -989,13 +989,13 @@ int main(int argc, char **argv) {
         }
 
         // Check if it's time to send an abort message
-        if (conn_state && conn_state->connected && conn_state->listen_sent && 
+        if (conn_state->connected && conn_state->listen_sent && 
             conn_state->wake_word_sent && !conn_state->abort_sent && conn_state->server_hello_received) {
             if (time(NULL) - conn_state->listen_sent_time > ABORT_SEND_OFFSET_SECONDS) {
                 fprintf(stdout, "Sending 'abort' message after delay...\n");
                 char formatted_abort_message[256];
                 int abort_msg_len;
-                if (conn_state && conn_state->session_id[0] != '\0') {
+                if (conn_state->session_id[0] != '\0') {
                     abort_msg_len = snprintf(formatted_abort_message, sizeof(formatted_abort_message),
                                              "{\"type\": \"abort\", \"session_id\": \"%s\", \"reason\": \"wake_word_detected\"}",
                                              conn_state->session_id);
@@ -1031,11 +1031,12 @@ int main(int argc, char **argv) {
     fprintf(stdout, "Exiting main loop. Cleaning up...\n");
 
     // Signal the service thread to stop and wait for it
-    interrupted = 1; // Ensure it's set for the service thread
+    interrupted = 1;
 
     if (g_context) {
         lwsl_user("Cancelling service for context from main thread.\n");
-        lws_cancel_service(g_context); // Wake up lws_service in the other thread
+        // Wake up lws_service in the other thread
+        lws_cancel_service(g_context);
     }
 
 #ifdef _WIN32
