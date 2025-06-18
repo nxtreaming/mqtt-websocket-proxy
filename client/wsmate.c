@@ -22,8 +22,9 @@
 //
 // Note:
 // 
-// there is 10s timeout if server hello is not received
-// there is 180s timeout if no any message is received
+// There is 10s timeout if server hello is not received
+// There is 180s timeout if no any message is received:
+//   Client need not implement this feature, websocket server will handle it
 //
 
 #define MAX_PAYLOAD_SIZE 1024
