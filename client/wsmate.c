@@ -85,9 +85,6 @@ typedef struct {
     time_t hello_sent_time;
 } connection_state_t;
 
-static char g_session_id[64] = {0};
-
-// Thread specific
 #ifdef _WIN32
 static HANDLE service_thread_handle = NULL;
 #else
