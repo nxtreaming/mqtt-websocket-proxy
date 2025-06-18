@@ -40,8 +40,8 @@
 #define SERVER_PATH "/xiaozhi/v1"
 
 #define AUTH_TOKEN "testtoken"
-#define DEVICE_ID "00:11:22:33:44:55"
-#define CLIENT_ID "testclient"
+#define DEVICE_ID "74:3A:F4:36:F2:D1"
+#define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF21"
 
 static int interrupted = 0;
 // Connection state structure
@@ -78,7 +78,10 @@ static HANDLE service_thread_handle = NULL;
 #else
 static pthread_t service_thread_id;
 #endif
+
+// Global context and WebSocket instance
 static struct lws_context *g_context = NULL;
+static struct lws *g_wsi = NULL;  // Global WebSocket instance pointer
 
 static const char *hello_msg = 
     "{\"type\":\"hello\","
@@ -435,6 +438,9 @@ static int callback_wsmate(
         case LWS_CALLBACK_CLIENT_ESTABLISHED: {
             fprintf(stdout, "CLIENT_ESTABLISHED\n");
             
+            // Store the WebSocket instance
+            g_wsi = wsi;
+            
             // Get the per-connection user data allocated by libwebsockets
             connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
             if (!conn_state) {
@@ -569,7 +575,8 @@ static int callback_wsmate(
 
         case LWS_CALLBACK_CLIENT_CLOSED: {
             fprintf(stdout, "CLIENT_CLOSED\n");
-            connection_state_t* closed_state = (connection_state_t*)lws_wsi_user(wsi);
+            g_wsi = NULL;  // Clear the WebSocket instance
+            connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
             if (closed_state) {
                 closed_state->connected = 0;
             }
@@ -827,19 +834,17 @@ int main(int argc, char **argv) {
 
         unsigned long current_ms = get_current_ms();
 
-        // Get connection state from protocols[0].user
+        // Get connection state from the active WebSocket instance
         connection_state_t *conn_state = NULL;
-        if (protocols[0].user) {
-            conn_state = (connection_state_t *)protocols[0].user;
+        if (g_wsi) {
+            conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
         }
         if (conn_state && conn_state->hello_sent_time > 0 && !conn_state->server_hello_received) {
             if (time(NULL) - conn_state->hello_sent_time > HELLO_TIMEOUT_SECONDS) {
                 fprintf(stderr, "Timeout: Server HELLO not received within %d seconds. Closing connection.\n", HELLO_TIMEOUT_SECONDS);
                 if (g_context) {
-                    struct lws_context *context = g_context;
-                    struct lws *network_wsi = lws_get_network_wsi((struct lws *)context);
-                    if (network_wsi) {
-                        lws_close_reason(network_wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Hello timeout", 13);
+                    if (g_wsi) {
+                        lws_close_reason(g_wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Hello timeout", 13);
                     }
                 }
                 interrupted = 1;
@@ -947,15 +952,12 @@ int main(int argc, char **argv) {
                     conn_state->write_len = abort_msg_len;
                     conn_state->write_is_binary = 0;
                     conn_state->pending_write = 1;
-                    if (g_context) {
+                    if (g_wsi) {
                         lws_callback_on_writable_all_protocol(g_context, &protocols[0]);
                         fprintf(stdout, "'abort' message scheduled for sending: %s\n", formatted_abort_message);
                         conn_state->abort_sent = 1;
                         fprintf(stdout, "Closing connection after scheduling abort.\n");
-                        struct lws *network_wsi = lws_get_network_wsi((struct lws *)g_context);
-                        if (network_wsi) {
-                            lws_close_reason(network_wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char *)"Client abort", 12);
-                        }
+                        lws_close_reason(g_wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char *)"Client abort", 12);
                         interrupted = 1; // Signal to exit main loop
                     } else {
                         fprintf(stderr, "Error: No valid context for abort message\n");
