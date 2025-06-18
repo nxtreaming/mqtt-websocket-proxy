@@ -83,13 +83,6 @@ typedef struct {
     
     // Timeout handling
     time_t hello_sent_time;
-    
-    // State flags for message sequence
-    int send_binary_frames;
-    int send_wake_word;
-    int send_abort;
-    int close_after_abort;
-    int close_connection;
 } connection_state_t;
 
 static char g_session_id[64] = {0};
