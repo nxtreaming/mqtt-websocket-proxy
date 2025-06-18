@@ -713,6 +713,8 @@ int main(int argc, char **argv) {
     // Set console to UTF-8 to display Chinese characters correctly
     SetConsoleOutputCP(CP_UTF8);
 #endif
+    // Initialize random number generator with current time
+    srand((unsigned int)time(NULL));
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
     struct lws_context_creation_info info;
