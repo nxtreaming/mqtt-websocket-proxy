@@ -23,10 +23,11 @@
 //   Client need not implement this feature, websocket server will handle it
 //
 
-// Define close status if not already defined
 #ifndef LWS_CLOSE_STATUS_GOING_AWAY
 #define LWS_CLOSE_STATUS_GOING_AWAY 1001
 #endif
+
+//#define ENABLE_WEBSOCKET_VERBOSE 1
 
 #define MAX_PAYLOAD_SIZE 1024
 #define HELLO_TIMEOUT_SECONDS 10
@@ -685,7 +686,19 @@ static struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 } // Terminator
 };
 
+#ifdef ENABLE_WEBSOCKET_VERBOSE
+static void lws_log_emit_cb(int level, const char* line)
+{
+   fprintf(stderr, "%s", line);               
+}
+#endif
+
 int main(int argc, char **argv) {
+#ifdef ENABLE_WEBSOCKET_VERBOSE
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_PARSER |
+        LLL_HEADER | LLL_INFO | LLL_CLIENT, lws_log_emit_cb);
+#endif
+
 #ifdef _WIN32
     // Set console to UTF-8 to display Chinese characters correctly
     SetConsoleOutputCP(CP_UTF8);

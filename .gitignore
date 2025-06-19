@@ -9,3 +9,4 @@ third_party/*
 mqtt_opt.md
 local_dev/
 cpp_client/
+app-debug/
