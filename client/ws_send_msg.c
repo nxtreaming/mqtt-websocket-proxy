@@ -290,3 +290,105 @@ int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state
     
     return result;
 }
+
+int send_abort_message_with_reason(struct lws* wsi, connection_state_t* conn_state, const char* reason) {
+    if (!wsi || !conn_state) {
+        fprintf(stderr, "Error: Invalid parameters for send_abort_message_with_reason\n");
+        return -1;
+    }
+
+    if (strlen(conn_state->session_id) == 0) {
+        fprintf(stderr, "Error: Cannot send abort message, session_id is missing.\n");
+        return -1;
+    }
+
+    fprintf(stdout, "Sending 'abort' message%s%s.\n",
+        reason ? " with reason: " : "",
+        reason ? reason : "");
+
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
+
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "abort");
+
+    // Add reason if provided
+    if (reason && strlen(reason) > 0) {
+        cJSON_AddStringToObject(root, "reason", reason);
+    }
+
+    // Convert to string
+    char* json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+
+    return result;
+}
+
+int send_mcp_message(struct lws* wsi, connection_state_t* conn_state, const char* payload) {
+    if (!wsi || !conn_state || !payload) {
+        fprintf(stderr, "Error: Invalid parameters for send_mcp_message\n");
+        return -1;
+    }
+
+    if (strlen(conn_state->session_id) == 0) {
+        fprintf(stderr, "Error: Cannot send MCP message, session_id is missing.\n");
+        return -1;
+    }
+
+    fprintf(stdout, "Sending 'mcp' message with payload.\n");
+
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON* root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
+
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "mcp");
+
+    // Parse the payload string to a JSON object
+    cJSON* payload_json = cJSON_Parse(payload);
+    if (!payload_json) {
+        fprintf(stderr, "Error: Failed to parse payload JSON\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    // Add the payload as an object
+    cJSON_AddItemToObject(root, "payload", payload_json);
+
+    // Convert to string
+    char* json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+
+    return result;
+}

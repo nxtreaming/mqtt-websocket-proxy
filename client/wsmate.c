@@ -308,6 +308,8 @@ static void print_help(void) {
     fprintf(stdout, "  detect <text>       - Send detect message with text\n");
     fprintf(stdout, "  chat <message>      - Send a chat message\n");
     fprintf(stdout, "  abort               - Send abort message and close connection\n");
+    fprintf(stdout, "  abort-reason <reason> - Send abort message with reason\n");
+    fprintf(stdout, "  mcp <payload>       - Send MCP message with JSON-RPC payload\n");
     fprintf(stdout, "  exit                - Close connection and exit\n");
     fprintf(stdout, "\n");
 }
@@ -489,6 +491,48 @@ static void process_command(struct lws *wsi, connection_state_t *conn_state, con
         conn_state->should_send_abort = 1;
         lws_callback_on_writable(wsi);
         fprintf(stdout, "Abort message queued\n");
+    }
+    else if (strcmp(cmd, "abort-reason") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        
+        if (strlen(param) == 0) {
+            fprintf(stderr, "Please provide a reason for abort\n");
+            return;
+        }
+        
+        // Send abort message with reason
+        send_abort_message_with_reason(wsi, conn_state, param);
+    }
+    else if (strcmp(cmd, "mcp") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        
+        // For MCP command, extract the payload directly from the original command
+        // to preserve JSON structure and UTF-8 encoding
+        const char* mcp_payload = strstr(command, "mcp");
+        if (!mcp_payload) {
+            fprintf(stderr, "Invalid MCP command format\n");
+            return;
+        }
+        
+        // Skip "mcp" and any whitespace
+        mcp_payload += 3; // Length of "mcp"
+        while (*mcp_payload && (*mcp_payload == ' ' || *mcp_payload == '\t')) {
+            mcp_payload++;
+        }
+        
+        if (strlen(mcp_payload) == 0) {
+            fprintf(stderr, "Please provide a JSON-RPC payload\n");
+            return;
+        }
+        
+        // Send MCP message with payload
+        send_mcp_message(wsi, conn_state, mcp_payload);
     }
     else if (strcmp(cmd, "exit") == 0) {
         interrupted = 1;

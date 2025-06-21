@@ -115,4 +115,22 @@ int send_chat_message(struct lws *wsi, connection_state_t *conn_state, const cha
  */
 int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state);
 
+/**
+ * @brief Send an abort message with an optional reason
+ * @param wsi WebSocket instance
+ * @param conn_state Connection state
+ * @param reason Optional reason for abort (can be NULL)
+ * @return 0 on success, -1 on failure
+ */
+int send_abort_message_with_reason(struct lws *wsi, connection_state_t *conn_state, const char *reason);
+
+/**
+ * @brief Send an MCP message with a JSON-RPC payload
+ * @param wsi WebSocket instance
+ * @param conn_state Connection state
+ * @param payload JSON-RPC payload as a string
+ * @return 0 on success, -1 on failure
+ */
+int send_mcp_message(struct lws *wsi, connection_state_t *conn_state, const char *payload);
+
 #endif /* WS_SEND_MSG_H */
