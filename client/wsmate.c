@@ -5,6 +5,9 @@
 #include <libwebsockets.h>
 #include <stdarg.h>
 
+#include "ws_send_msg.h"
+#include "ws_handle_msg.h"
+
 #ifdef _WIN32
 #include <Windows.h>
 #else
@@ -32,43 +35,6 @@
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
 static int interrupted = 0;
-// Audio parameters structure
-typedef struct {
-    char format[32];           // Audio format (e.g., "opus")
-    int sample_rate;           // Sample rate in Hz (e.g., 16000, 24000)
-    int channels;              // Number of audio channels (e.g., 1, 2)
-    int frame_duration;        // Frame duration in ms (e.g., 60)
-} audio_params_t;
-
-// Connection state structure
-typedef struct {
-    // Connection state
-    int connected;
-    int hello_sent;
-    int server_hello_received;
-    int listen_sent;
-    int listen_stopped;
-    time_t listen_sent_time;
-    
-    // Message state
-    int pending_write;
-    size_t write_len;
-    int write_is_binary;
-    unsigned char write_buf[LWS_PRE + 4096];  // Buffer for outgoing messages
-    
-    // Session information
-    char session_id[64];  // Store session ID from server hello
-    char stt_text[1024];  // Store STT recognized text
-    
-    // Connection control
-    int should_close;        // Flag to indicate connection should be closed
-    int interactive_mode;    // Flag to indicate interactive mode is active
-    int should_send_abort;   // Flag to indicate abort message should be sent
-    
-    audio_params_t audio_params; // Audio parameters
-    // Timeout handling
-    time_t hello_sent_time;
-} connection_state_t;
 
 #ifdef _WIN32
 static HANDLE service_thread_handle = NULL;
@@ -105,404 +71,6 @@ static uint64_t get_current_ms(void) {
     gettimeofday(&tv, NULL);
     return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 #endif
-}
-
-static int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char* message, size_t message_len, int is_binary) {
-    if (!wsi || !conn_state || !message) {
-        fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
-        return -1;
-    }
-    
-    if (message_len > sizeof(conn_state->write_buf) - LWS_PRE) {
-        fprintf(stderr, "Error: Message too large (%zu bytes) for send buffer\n", message_len);
-        return -1;
-    }
-    
-    memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
-    if (!is_binary && message_len < sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        conn_state->write_buf[LWS_PRE + message_len] = '\0';
-    }
-
-    conn_state->write_len = message_len;
-    conn_state->write_is_binary = is_binary;
-    conn_state->pending_write = 1;
-
-    // Log the message we're about to send
-    if (!is_binary) {
-        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
-            (unsigned int)message_len, (const char*)(conn_state->write_buf + LWS_PRE));
-    }
-    else {
-        fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
-    }
-
-    // Schedule the write
-    lws_callback_on_writable(wsi);
-
-    return 0;
-}
-
-static int send_json_message(struct lws* wsi, connection_state_t* conn_state, const char* format, ...) {
-    if (!wsi || !conn_state || !format) {
-        fprintf(stderr, "Error: Invalid parameters for send_json_message\n");
-        return -1;
-    }
-
-    va_list args;
-    va_start(args, format);
-
-    // Format the message
-    int msg_len = vsnprintf(NULL, 0, format, args);
-    va_end(args);
-
-    if (msg_len <= 0 || (size_t)msg_len >= sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        fprintf(stderr, "Error: Message formatting failed or message too long\n");
-        return -1;
-    }
-
-    va_start(args, format);
-    vsnprintf((char*)(conn_state->write_buf + LWS_PRE), sizeof(conn_state->write_buf) - LWS_PRE - 1, format, args);
-    va_end(args);
-
-    return send_ws_message(wsi, conn_state, (const char*)(conn_state->write_buf + LWS_PRE), (size_t)msg_len, 0);
-}
-
-// Binary frame sending function
-static int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, size_t frame_size) {
-    if (!wsi || !conn_state || frame_size == 0 || frame_size > 4096) {
-        fprintf(stderr, "Error: Invalid parameters for send_binary_frame\n");
-        return -1;
-    }
-    
-    // Use a local buffer for binary data
-    unsigned char buffer[4096];
-    
-    // Fill with some dummy data
-    for (size_t i = 0; i < frame_size; i++) {
-        buffer[i] = (unsigned char)(i & 0xFF);
-    }
-    
-    // Send the binary frame
-    int result = send_ws_message(wsi, conn_state, 
-                               (const char*)buffer, 
-                               frame_size, 1);
-    
-    if (result == 0) {
-        fprintf(stdout, "Sent binary frame (%zu bytes)\n", frame_size);
-    }
-    
-    return result;
-}
-
-static int send_stop_listening_message(struct lws *wsi, connection_state_t *conn_state) {
-    if (!wsi || !conn_state) {
-        fprintf(stderr, "Error: Invalid parameters for send_stop_listening_message\n");
-        return -1;
-    }
-    
-    // Ensure we have a valid session_id
-    if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: No session_id available for stop listening message\n");
-        return -1;
-    }
-    
-    fprintf(stdout, "Sending stop listening message\n");
-    
-    char stop_msg[256];
-    snprintf(stop_msg, sizeof(stop_msg), 
-             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"stop\"}", 
-             conn_state->session_id);
-    
-    int result = send_ws_message(wsi, conn_state, stop_msg, strlen(stop_msg), 0);
-    if (result == 0) {
-        conn_state->listen_stopped = 1;
-    }
-    return result;
-}
-
-static int send_detect_message(struct lws *wsi, connection_state_t *conn_state, const char *text) {
-    if (!wsi || !conn_state || !text) {
-        fprintf(stderr, "Error: Invalid parameters for send_detect_message\n");
-        return -1;
-    }
-    
-    if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: No session_id available for detect message\n");
-        return -1;
-    }
-    
-    fprintf(stdout, "Sending detect message with text: %s\n", text);
-    
-    char detect_msg[512];
-    snprintf(detect_msg, sizeof(detect_msg), 
-             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"%s\"}", 
-             conn_state->session_id, text);
-    
-    int result = send_ws_message(wsi, conn_state, detect_msg, strlen(detect_msg), 0);
-    if (result == 0) {
-        conn_state->listen_stopped = 1;
-    }
-    return result;
-}
-
-static int send_chat_message(struct lws *wsi, connection_state_t *conn_state, const char *text) {
-    if (!wsi || !conn_state || !text) {
-        fprintf(stderr, "Error: Invalid parameters for send_chat_message\n");
-        return -1;
-    }
-    
-    // Ensure we have a valid session_id
-    if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: No session_id available for chat message\n");
-        return -1;
-    }
-    
-    fprintf(stdout, "Sending text message for TTS: %s\n", text);
-    
-    // Format according to WebSocket protocol for text-to-speech
-    return send_json_message(wsi, conn_state, 
-                           "{\"session_id\":\"%s\","
-                           "\"type\":\"listen\","
-                           "\"mode\":\"manual\","
-                           "\"state\":\"detect\","
-                           "\"text\":\"%s\"}",
-                           conn_state->session_id, text);
-}
-
-static int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state) {
-    if (!wsi || !conn_state) {
-        fprintf(stderr, "Error: Invalid parameters for send_start_listening_message\n");
-        return -1;
-    }
-
-    if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: Cannot send listen message, session_id is missing.\n");
-        return -1;
-    }
-
-    fprintf(stdout, "Sending 'listen' message (state: start).\n");
-
-    int result = send_json_message(wsi, conn_state,
-                                   "{\"type\":\"listen\",\"session_id\":\"%s\",\"state\":\"start\",\"mode\":\"manual\"}",
-                                   conn_state->session_id);
-    if (result == 0) {
-        conn_state->listen_sent = 1;
-        conn_state->listen_sent_time = time(NULL);
-    }
-    return result;
-}
-
-static void print_audio_params(const audio_params_t *params) {
-    if (!params) return;
-    
-    fprintf(stdout, "Audio Parameters:\n");
-    fprintf(stdout, "  Format: %s\n", params->format);
-    fprintf(stdout, "  Sample Rate: %d Hz\n", params->sample_rate);
-    fprintf(stdout, "  Channels: %d\n", params->channels);
-    fprintf(stdout, "  Frame Duration: %d ms\n", params->frame_duration);
-}
-
-static void handle_hello_message(struct lws *wsi, cJSON *json_response) {
-    // Get connection state from the user parameter
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_hello_message\n");
-        return;
-    }
-
-    const cJSON *transport_item = cJSON_GetObjectItemCaseSensitive(json_response, "transport");
-    const cJSON *session_id_item = cJSON_GetObjectItemCaseSensitive(json_response, "session_id");
-    const cJSON *audio_params_item = cJSON_GetObjectItemCaseSensitive(json_response, "audio_params");
-    
-    // Parse session ID
-    if (cJSON_IsString(session_id_item) && (session_id_item->valuestring != NULL)) {
-        strncpy(conn_state->session_id, session_id_item->valuestring, sizeof(conn_state->session_id) - 1);
-        conn_state->session_id[sizeof(conn_state->session_id) - 1] = '\0'; // Ensure null termination
-        fprintf(stdout, "  Session ID: %s (stored)\n", conn_state->session_id);
-    } else {
-        fprintf(stdout, "  No session_id in hello message or not a string.\n");
-    }
-    
-    // Parse audio parameters if available
-    if (cJSON_IsObject(audio_params_item)) {
-        const cJSON *format = cJSON_GetObjectItemCaseSensitive(audio_params_item, "format");
-        const cJSON *sample_rate = cJSON_GetObjectItemCaseSensitive(audio_params_item, "sample_rate");
-        const cJSON *channels = cJSON_GetObjectItemCaseSensitive(audio_params_item, "channels");
-        const cJSON *frame_duration = cJSON_GetObjectItemCaseSensitive(audio_params_item, "frame_duration");
-        
-        // Set default values first
-        strncpy(conn_state->audio_params.format, "opus", sizeof(conn_state->audio_params.format));
-        conn_state->audio_params.sample_rate = 16000;
-        conn_state->audio_params.channels = 1;
-        conn_state->audio_params.frame_duration = 60;
-        
-        // Override with server values if provided
-        if (cJSON_IsString(format) && format->valuestring != NULL) {
-            strncpy(conn_state->audio_params.format, format->valuestring, 
-                   sizeof(conn_state->audio_params.format) - 1);
-            conn_state->audio_params.format[sizeof(conn_state->audio_params.format) - 1] = '\0';
-        }
-        
-        if (cJSON_IsNumber(sample_rate)) {
-            conn_state->audio_params.sample_rate = sample_rate->valueint;
-        }
-        
-        if (cJSON_IsNumber(channels)) {
-            conn_state->audio_params.channels = channels->valueint;
-        }
-        
-        if (cJSON_IsNumber(frame_duration)) {
-            conn_state->audio_params.frame_duration = frame_duration->valueint;
-        }
-        
-        // Print the received audio parameters
-        fprintf(stdout, "Received audio parameters from server:\n");
-        print_audio_params(&conn_state->audio_params);
-    } else {
-        fprintf(stdout, "  No audio_params in hello message, using defaults.\n");
-        print_audio_params(&conn_state->audio_params);
-    }
-    
-    // Validate transport type
-    if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
-        fprintf(stdout, "Server hello message is valid.\n");
-        conn_state->server_hello_received = 1;
-
-        // Per protocol, send 'listen' message after receiving server hello
-        send_start_listening_message(wsi, conn_state);
-    } else {
-        fprintf(stderr, "Error: Invalid or missing transport type in server hello.\n");
-        conn_state->should_close = 1;
-    }
-}
-
-static void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
-    // Get connection state from the user parameter
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_mcp_message\n");
-        return;
-    }
-    
-    fprintf(stdout, "  Received MCP message.\n");
-    
-    // Parse the payload as JSON-RPC
-    const cJSON *payload = cJSON_GetObjectItemCaseSensitive(json_response, "payload");
-    if (!cJSON_IsObject(payload)) {
-        fprintf(stderr, "  No payload in MCP message or not an object\n");
-        return;
-    }
-    
-    // Log the MCP message
-    char *payload_str = cJSON_PrintUnformatted(payload);
-    if (payload_str) {
-        fprintf(stdout, "  MCP Payload: %s\n", payload_str);
-        free(payload_str);
-    }
-    
-    // Handle JSON-RPC method
-    const cJSON *method = cJSON_GetObjectItemCaseSensitive(payload, "method");
-    const cJSON *id = cJSON_GetObjectItemCaseSensitive(payload, "id");
-    
-    if (cJSON_IsString(method) && cJSON_IsNumber(id)) {
-        const char *method_str = method->valuestring;
-        int id_num = id->valueint;
-        
-        fprintf(stdout, "  JSON-RPC Method: %s, ID: %d\n", method_str, id_num);
-        
-        // Handle known methods
-        if (strcmp(method_str, "initialize") == 0) {
-            // Ensure we have a valid session_id
-            if (strlen(conn_state->session_id) == 0) {
-                fprintf(stderr, "Error: No session_id available for MCP response\n");
-                return;
-            }
-            
-            // Send formatted response
-            if (send_json_message(wsi, conn_state, 
-                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{}}}", 
-                conn_state->session_id, id_num) != 0) {
-                fprintf(stderr, "Error: Failed to send MCP response\n");
-            }
-        } else if (strcmp(method_str, "tools/list") == 0) {
-            // Ensure we have a valid session_id
-            if (strlen(conn_state->session_id) == 0) {
-                fprintf(stderr, "Error: No session_id available for tools/list response\n");
-                return;
-            }
-            
-            // Send formatted response
-            if (send_json_message(wsi, conn_state, 
-                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}}", 
-                conn_state->session_id, id_num) != 0) {
-                fprintf(stderr, "Error: Failed to send tools/list response\n");
-            }
-        } else {
-            fprintf(stdout, "  Unhandled MCP method: %s\n", method_str);
-        }
-    }
-}
-
-// Generic handler for simple message types (STT, LLM) that just need logging
-static void handle_generic_message(struct lws *wsi, cJSON *json_response, const char *msg_type) {
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_%s_message\n", msg_type);
-        return;
-    }
-    
-    fprintf(stdout, "  Received %s message.\n", msg_type);
-    
-    // Log the message
-    char *json_str = cJSON_PrintUnformatted(json_response);
-    if (json_str) {
-        fprintf(stdout, "  %s Message: %s\n", msg_type, json_str);
-        free(json_str);
-    }
-    
-    // For STT messages, extract and display the recognized text
-    if (strcmp(msg_type, "STT") == 0) {
-        const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(json_response, "text");
-        if (cJSON_IsString(text_item) && text_item->valuestring) {
-            // Save the recognized text in the connection state
-            strncpy(conn_state->stt_text, text_item->valuestring, sizeof(conn_state->stt_text) - 1);
-            conn_state->stt_text[sizeof(conn_state->stt_text) - 1] = '\0'; // Ensure null termination
-            fprintf(stdout, "  >>> STT Recognized Text: %s\n", conn_state->stt_text);
-        }
-    }
-}
-
-static void handle_tts_message(struct lws *wsi, cJSON *json_response) {
-    // First use the generic handler for basic logging
-    handle_generic_message(wsi, json_response, "TTS");
-    
-    // Get connection state
-    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-    if (!conn_state) {
-        fprintf(stderr, "Error: No connection state in handle_tts_message\n");
-        return;
-    }
-    
-    // TTS messages are control messages only
-    // Actual audio data comes through binary frames
-    
-    // Check for state information
-    const cJSON *state_item = cJSON_GetObjectItemCaseSensitive(json_response, "state");
-    if (cJSON_IsString(state_item) && state_item->valuestring) {
-        fprintf(stdout, "    TTS State: %s\n", state_item->valuestring);
-        
-        // Handle different TTS states
-        if (strcmp(state_item->valuestring, "start") == 0) {
-            fprintf(stdout, "    TTS playback starting, audio will come via binary frames\n");
-        } else if (strcmp(state_item->valuestring, "stop") == 0) {
-            fprintf(stdout, "    TTS playback stopped\n");
-        }
-    }
-    
-    const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(json_response, "text");
-    if (cJSON_IsString(text_item) && text_item->valuestring) {
-        fprintf(stdout, "    TTS Text (e.g. for sentence_start): %s\n", text_item->valuestring);
-    }
 }
 
 static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
@@ -621,7 +189,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
         case LWS_CALLBACK_CLIENT_CLOSED: {
             fprintf(stdout, "CLIENT_CLOSED\n");
-            g_wsi = NULL;  // Clear the WebSocket instance
+            g_wsi = NULL;
             connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
             if (closed_state) {
                 closed_state->connected = 0;
@@ -681,7 +249,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     return 0;
 }
 
-// Function to print help information
 static void print_help(void) {
     fprintf(stdout, "\nAvailable commands:\n");
     fprintf(stdout, "  help                 - Show this help message\n");
@@ -695,7 +262,6 @@ static void print_help(void) {
     fprintf(stdout, "\n");
 }
 
-// Function to process user commands
 static void process_command(struct lws *wsi, connection_state_t *conn_state, const char *command) {
     if (!command || !*command) return;
     
@@ -814,7 +380,6 @@ static void handle_interactive_mode() {
     }
 }
 
-// Service thread function - Handles WebSocket service
 #ifdef _WIN32
 static DWORD WINAPI service_thread_func(LPVOID arg)
 #else
@@ -827,17 +392,7 @@ static void *service_thread_func(void *arg)
     // Main WebSocket service loop
     while (!interrupted && context) {
         // Process WebSocket events with a 50ms timeout
-        int result = lws_service(context, 50);
-        
-        // Check for pending writes
-        if (g_wsi) {
-            connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
-            if (conn_state && conn_state->pending_write) {
-                lws_callback_on_writable(g_wsi);
-            }
-        }
-        
-        // Check for errors
+        int result = lws_service(context, 50);        
         if (result < 0) {
             lwsl_err("lws_service returned error: %d\n", result);
             break;
@@ -871,7 +426,6 @@ int main(int argc, char **argv) {
     fprintf(stdout, "Connecting to %s:%d%s\n", SERVER_ADDRESS, SERVER_PORT, SERVER_PATH);
     fprintf(stdout, "Type 'help' for available commands\n\n");
         
-    fprintf(stdout, "\nRunning in text mode.\n");
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
     struct lws_context_creation_info info;
@@ -983,8 +537,6 @@ int main(int argc, char **argv) {
         lwsl_user("Service thread joined (Windows).\n");
     }
 #else
-    // Check if service_thread_id was initialized (i.e., thread creation was attempted)
-    // and g_context was valid when pthread_create was called.
     if (g_context && service_thread_id != 0) {
         lwsl_user("Waiting for service thread to join (POSIX)...\n");
         void* res;

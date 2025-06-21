@@ -11,7 +11,7 @@ add_subdirectory(cjson)
 # Assuming libwebsockets headers are accessible via the main project's include paths
 # or that the 'websockets' target handles its own include directories.
 
-add_executable(wsmate wsmate.c)
+add_executable(wsmate wsmate.c ws_send_msg.c ws_handle_msg.c)
 
 # Include directory for cJSON.h (from the cjson subdirectory)
 target_include_directories(wsmate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cjson)
