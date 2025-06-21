@@ -10,6 +10,8 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <io.h>
+#include <fcntl.h>
 #else
 #include <pthread.h>
 #include <unistd.h>
@@ -206,8 +208,56 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             }
             
             if (write_state->pending_write) {
-                // Handle pending write if needed
-                // Currently no implementation as we're not using pending writes in this mode
+                // Get a pointer to the buffer after the LWS_PRE bytes
+                unsigned char *buf = (unsigned char *)write_state->write_buf + LWS_PRE;
+                size_t wlen = write_state->write_len;
+                
+                // Determine the write flags
+                enum lws_write_protocol write_flags = write_state->write_is_binary ? 
+                    LWS_WRITE_BINARY : LWS_WRITE_TEXT;
+                
+                // Ensure we have a valid write length
+                if (wlen == 0) {
+                    fprintf(stderr, "Error: Attempted to send zero-length message\n");
+                    write_state->pending_write = 0;
+                    break;
+                }
+                
+                // For text messages, ensure proper null termination for logging
+                if (!write_state->write_is_binary) {
+                    if (wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
+                        buf[wlen] = '\0';
+                    } else {
+                        fprintf(stderr, "Error: Message too long for buffer\n");
+                        write_state->pending_write = 0;
+                        break;
+                    }
+                }
+                
+                // Send the message with proper WebSocket framing
+                int write_result = lws_write(wsi, buf, wlen, write_flags);
+                if (write_result < 0) {
+                    fprintf(stderr, "Error %d writing to WebSocket\n", write_result);
+                    return -1;
+                } else if (write_result != (int)wlen) {
+                    fprintf(stderr, "Partial write: %d of %u bytes written\n", write_result, (unsigned int)wlen);
+                    return -1;
+                }
+                
+                // Clear the pending write flag since we've sent the message
+                write_state->pending_write = 0;
+                fprintf(stdout, "Successfully sent %s message\n", write_state->write_is_binary ? "binary" : "text");
+                
+                // Update connection state based on what was sent
+                if (!write_state->hello_sent) {
+                    // This was the hello message
+                    write_state->hello_sent = 1;
+                    write_state->hello_sent_time = time(NULL);
+                    fprintf(stdout, "Client hello sent at %ld\n", (long)write_state->hello_sent_time);
+                } else if (write_state->listen_sent && !write_state->write_is_binary) {
+                    // This was the listen message (not a binary frame)
+                    fprintf(stdout, "Listen message sent successfully\n");                    
+                }
             } 
             else if (write_state->should_send_abort) {
                 // Send abort message
@@ -268,8 +318,39 @@ static void process_command(struct lws *wsi, connection_state_t *conn_state, con
     char cmd[256] = {0};
     char param[1024] = {0};
     
-    // Simple command parsing
-    int num_matched = sscanf(command, "%255s %1023[^\n]", cmd, param);
+    // Extract the command (first word)
+    const char *space = strchr(command, ' ');
+    if (space) {
+        // Command has parameters
+        size_t cmd_len = space - command;
+        if (cmd_len >= sizeof(cmd)) cmd_len = sizeof(cmd) - 1;
+        strncpy(cmd, command, cmd_len);
+        cmd[cmd_len] = '\0';
+        
+        // Skip any whitespace after the command
+        const char *param_start = space + 1;
+        while (*param_start == ' ') param_start++;
+        
+        // Simple quote handling - just remove the surrounding quotes if present
+        if (*param_start == '"' && param_start[strlen(param_start)-1] == '"') {
+            // Copy without the quotes
+            size_t content_len = strlen(param_start) - 2;
+            if (content_len >= sizeof(param)) content_len = sizeof(param) - 1;
+            strncpy(param, param_start + 1, content_len);
+            param[content_len] = '\0';
+        } else {
+            // Copy the parameter normally
+            strncpy(param, param_start, sizeof(param) - 1);
+            param[sizeof(param) - 1] = '\0';
+        }
+    } else {
+        // Command without parameters
+        strncpy(cmd, command, sizeof(cmd) - 1);
+        cmd[sizeof(cmd) - 1] = '\0';
+    }
+    
+    // Use the parameter directly
+    char *cleaned_param = param;
     
     if (strcmp(cmd, "help") == 0) {
         print_help();
@@ -305,22 +386,100 @@ static void process_command(struct lws *wsi, connection_state_t *conn_state, con
             fprintf(stderr, "Not connected to server\n");
             return;
         }
-        if (strlen(param) == 0) {
-            fprintf(stderr, "Please provide text to detect\n");
+        
+        // For detect command, extract the text directly from the original command
+        // to preserve UTF-8 encoding
+        const char* detect_text = strstr(command, "detect");
+        if (!detect_text) {
+            fprintf(stderr, "Invalid detect command format\n");
             return;
         }
-        send_detect_message(wsi, conn_state, param);
+        
+        // Skip "detect" and any whitespace
+        detect_text += 6; // Length of "detect"
+        while (*detect_text && (*detect_text == ' ' || *detect_text == '\t')) {
+            detect_text++;
+        }
+        
+        // Remove surrounding quotes if present
+        if (*detect_text == '"') {
+            detect_text++; // Skip opening quote
+            
+            // Create a copy without the closing quote
+            char text_copy[1024] = {0};
+            strncpy(text_copy, detect_text, sizeof(text_copy) - 1);
+            
+            // Find and remove closing quote if present
+            char* closing_quote = strrchr(text_copy, '"');
+            if (closing_quote) {
+                *closing_quote = '\0';
+            }
+            
+            if (strlen(text_copy) == 0) {
+                fprintf(stderr, "Please provide text to detect\n");
+                return;
+            }
+            
+            send_detect_message(wsi, conn_state, text_copy);
+        } else {
+            // No quotes, use as is
+            if (strlen(detect_text) == 0) {
+                fprintf(stderr, "Please provide text to detect\n");
+                return;
+            }
+            
+            send_detect_message(wsi, conn_state, detect_text);
+        }
     }
     else if (strcmp(cmd, "chat") == 0) {
         if (!conn_state->connected) {
             fprintf(stderr, "Not connected to server\n");
             return;
         }
-        if (strlen(param) == 0) {
-            fprintf(stderr, "Please provide a message to send\n");
+        
+        // For chat command, extract the text directly from the original command
+        // to preserve UTF-8 encoding
+        const char* chat_text = strstr(command, "chat");
+        if (!chat_text) {
+            fprintf(stderr, "Invalid chat command format\n");
             return;
         }
-        send_chat_message(wsi, conn_state, param);
+        
+        // Skip "chat" and any whitespace
+        chat_text += 4; // Length of "chat"
+        while (*chat_text && (*chat_text == ' ' || *chat_text == '\t')) {
+            chat_text++;
+        }
+        
+        // Remove surrounding quotes if present
+        if (*chat_text == '"') {
+            chat_text++; // Skip opening quote
+            
+            // Create a copy without the closing quote
+            char text_copy[1024] = {0};
+            strncpy(text_copy, chat_text, sizeof(text_copy) - 1);
+            
+            // Find and remove closing quote if present
+            char* closing_quote = strrchr(text_copy, '"');
+            if (closing_quote) {
+                *closing_quote = '\0';
+            }
+            
+            if (strlen(text_copy) == 0) {
+                fprintf(stderr, "Please provide a message to send\n");
+                return;
+            }
+            
+            send_chat_message(wsi, conn_state, text_copy);
+        } else {
+            // No quotes, use as is
+            if (strlen(chat_text) == 0) {
+                fprintf(stderr, "Please provide a message to send\n");
+                return;
+            }
+            
+            send_chat_message(wsi, conn_state, chat_text);
+        }
     }
     else if (strcmp(cmd, "abort") == 0) {
         if (!conn_state->connected) {
@@ -415,8 +574,12 @@ static struct lws_protocols protocols[] = {
 
 int main(int argc, char **argv) {
 #ifdef _WIN32
-    // Set console to UTF-8 to display Chinese characters correctly
+    // Set console to UTF-8 for both input and output to handle Chinese characters correctly
+    SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
+    
+    // We'll use the standard console mode instead of wide character mode
+    // as it's more compatible with the rest of our code
 #endif
     // Initialize random number generator with current time
     srand((unsigned int)time(NULL));

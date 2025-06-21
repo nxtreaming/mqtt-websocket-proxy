@@ -4,6 +4,7 @@
 #include <time.h>
 #include <libwebsockets.h>
 #include <stdarg.h>
+#include "cjson/cJSON.h"
 #include "ws_send_msg.h"
 
 int send_ws_message(struct lws* wsi, connection_state_t* conn_state, 
@@ -105,15 +106,38 @@ int send_stop_listening_message(struct lws *wsi, connection_state_t *conn_state)
     
     fprintf(stdout, "Sending stop listening message\n");
     
-    char stop_msg[256];
-    snprintf(stop_msg, sizeof(stop_msg), 
-             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"stop\"}", 
-             conn_state->session_id);
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
     
-    int result = send_ws_message(wsi, conn_state, stop_msg, strlen(stop_msg), 0);
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "stop");
+    
+    // Convert to string
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+    
+    // Update connection state if successful
     if (result == 0) {
         conn_state->listen_stopped = 1;
     }
+    
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+    
     return result;
 }
 
@@ -130,15 +154,39 @@ int send_detect_message(struct lws *wsi, connection_state_t *conn_state, const c
     
     fprintf(stdout, "Sending detect message with text: %s\n", text);
     
-    char detect_msg[512];
-    snprintf(detect_msg, sizeof(detect_msg), 
-             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"%s\"}", 
-             conn_state->session_id, text);
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
     
-    int result = send_ws_message(wsi, conn_state, detect_msg, strlen(detect_msg), 0);
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", text); // cJSON properly escapes Unicode
+    
+    // Convert to string
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+    
+    // Update connection state if successful
     if (result == 0) {
         conn_state->listen_stopped = 1;
     }
+    
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+    
     return result;
 }
 
@@ -156,14 +204,36 @@ int send_chat_message(struct lws *wsi, connection_state_t *conn_state, const cha
     
     fprintf(stdout, "Sending text message for TTS: %s\n", text);
     
-    // Format according to WebSocket protocol for text-to-speech
-    return send_json_message(wsi, conn_state, 
-                           "{\"session_id\":\"%s\","
-                           "\"type\":\"listen\","
-                           "\"mode\":\"manual\","
-                           "\"state\":\"detect\","
-                           "\"text\":\"%s\"}",
-                           conn_state->session_id, text);
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
+    
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "mode", "manual");
+    cJSON_AddStringToObject(root, "state", "detect");
+    cJSON_AddStringToObject(root, "text", text); // cJSON properly escapes Unicode
+    
+    // Convert to string
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+    
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+    
+    return result;
 }
 
 int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state) {
@@ -179,12 +249,39 @@ int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state
 
     fprintf(stdout, "Sending 'listen' message (state: start).\n");
 
-    int result = send_json_message(wsi, conn_state,
-                                   "{\"type\":\"listen\",\"session_id\":\"%s\",\"state\":\"start\",\"mode\":\"manual\"}",
-                                   conn_state->session_id);
+    // Create a cJSON object for proper JSON formatting with Unicode support
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        fprintf(stderr, "Error: Failed to create JSON object\n");
+        return -1;
+    }
+    
+    // Add all required fields
+    cJSON_AddStringToObject(root, "session_id", conn_state->session_id);
+    cJSON_AddStringToObject(root, "type", "listen");
+    cJSON_AddStringToObject(root, "mode", "manual");
+    cJSON_AddStringToObject(root, "state", "start");
+    
+    // Convert to string
+    char *json_str = cJSON_PrintUnformatted(root);
+    if (!json_str) {
+        fprintf(stderr, "Error: Failed to convert JSON to string\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    
+    // Send the message
+    int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
+    
+    // Update connection state if successful
     if (result == 0) {
         conn_state->listen_sent = 1;
         conn_state->listen_sent_time = time(NULL);
     }
+    
+    // Clean up
+    free(json_str);
+    cJSON_Delete(root);
+    
     return result;
 }
