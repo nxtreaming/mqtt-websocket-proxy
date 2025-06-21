@@ -82,7 +82,7 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
         fprintf(stdout, "Server hello message is valid.\n");
         conn_state->server_hello_received = 1;
 
-        // Per protocol, send 'listen' message after receiving server hello
+        // MUST enter listening state: start, otherwise the connection will be closed after 10s
         send_start_listening_message(wsi, conn_state);
     } else {
         fprintf(stderr, "Error: Invalid or missing transport type in server hello.\n");

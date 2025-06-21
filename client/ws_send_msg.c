@@ -247,6 +247,11 @@ int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state
         return -1;
     }
 
+    if (conn_state->listen_sent) {
+        fprintf(stderr, "Error: Start listening message already sent, cannot send again.\n");
+        return -1;
+    }
+
     fprintf(stdout, "Sending 'listen' message (state: start).\n");
 
     // Create a cJSON object for proper JSON formatting with Unicode support
