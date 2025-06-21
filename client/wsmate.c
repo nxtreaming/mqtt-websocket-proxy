@@ -31,12 +31,33 @@
 
 #define MAX_PAYLOAD_SIZE 1024
 #define HELLO_TIMEOUT_SECONDS 10
-#define WAKE_WORD_SEND_OFFSET_SECONDS 3
-#define ABORT_SEND_OFFSET_SECONDS 6 // Must be > WAKE_WORD_SEND_OFFSET_SECONDS
+
+
+#define AUDIO_SEND_DURATION_MS 3000  // 发送音频的持续时间（毫秒）
+#define AUDIO_SEND_DURATION_SECONDS (AUDIO_SEND_DURATION_MS / 1000)  // 向后兼容
+#define WAIT_FOR_RESPONSE_SECONDS 30   // Wait for server response (increased to 30s)
+#define TEST_MODE_AUDIO 0              // Test audio recognition
+#define TEST_MODE_TEXT 1               // Test text to speech
+#define TEST_MODE TEST_MODE_TEXT      // Change this to switch test modes
 
 #define MAX_BINARY_FRAMES_TO_SEND 5
 #define DUMMY_BINARY_FRAME_SIZE 20
 #define BINARY_FRAME_SEND_INTERVAL_MS 100 // Send a frame every 100ms
+
+// Opus音频配置
+#define OPUS_INPUT_FILE "d:/temp/opus_raw.bin"
+#define OPUS_OUTPUT_FILE "d:/temp/opus_output.bin"
+
+// Opus帧头定义
+#define OPUS_MAX_FRAME_SIZE 4096  // Opus单帧最大大小（根据RFC6716标准）
+#define OPUS_MAX_PACKET_DURATION 120  // Opus最大包持续时间(ms)
+
+#define OPUS_FRAME_DURATION_MS 60  // 每帧音频时长（毫秒）
+#define MAX_OPUS_FRAMES 50   // 最大发送帧数（约3秒）
+
+// Statistics
+static int g_total_audio_bytes_sent = 0;
+static int g_total_audio_bytes_received = 0;
 
 // Hardcoded for now, replace with dynamic values or config
 #define SERVER_ADDRESS "122.51.57.185"
@@ -44,7 +65,8 @@
 #define SERVER_PATH "/xiaozhi/v1"
 
 #define AUTH_TOKEN "testtoken"
-#define DEVICE_ID "74:3A:F4:36:F2:D2"
+//#define DEVICE_ID "74:3A:F4:36:F2:D2"
+#define DEVICE_ID "b8:f8:62:fc:eb:68"
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
 static int interrupted = 0;
@@ -62,10 +84,10 @@ typedef struct {
     int hello_sent;
     int server_hello_received;
     int listen_sent;
-    int wake_word_sent;
-    int abort_sent;
+    int listen_stopped;
+    int test_message_sent;
     time_t listen_sent_time;
-    time_t wake_word_sent_time;
+    time_t audio_start_time;
     int binary_frames_sent;
     uint64_t last_binary_frame_send_time_ms;
     int binary_frames_sent_count;
@@ -78,12 +100,28 @@ typedef struct {
     
     // Session information
     char session_id[64];  // Store session ID from server hello
+    char stt_text[1024];  // Store STT recognized text
+    
+    // Connection control
+    int should_close;        // Flag to indicate connection should be closed
+    
+    // Audio control
+    int should_send_audio;  // Flag to control audio frame sending
+    int should_send_abort;  // Flag to control when to send abort message
     
     // Audio parameters
     audio_params_t audio_params;
     
     // Timeout handling
     time_t hello_sent_time;
+    
+    // Opus音频状态
+    FILE *opus_input_file;          // Opus音频输入文件句柄
+    FILE *opus_output_file;         // 解码后的音频输出文件句柄
+    int opus_frames_sent;           // 已发送的Opus帧数
+    int opus_test_mode;             // 1=使用Opus文件, 0=使用模拟数据
+    size_t opus_frame_size;         // 当前Opus帧的实际大小
+    unsigned char opus_frame_buffer[OPUS_MAX_FRAME_SIZE];  // Opus帧缓冲区
 } connection_state_t;
 
 #ifdef _WIN32
@@ -115,27 +153,27 @@ static void sigint_handler(int sig) {
 
 static uint64_t get_current_ms(void) {
 #ifdef _WIN32
-    LARGE_INTEGER frequency;
-    LARGE_INTEGER count;
-    QueryPerformanceFrequency(&frequency);
-    QueryPerformanceCounter(&count);
-    return (uint64_t)(count.QuadPart * 1000 / frequency.QuadPart);
+    return (uint64_t)GetTickCount64();
 #else
-    return lws_now_usecs() / 1000;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 #endif
 }
 
 static int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char* message, size_t message_len, int is_binary) {
-    if (!wsi || !conn_state || (!message && !is_binary) || message_len == 0 ||
-        message_len > sizeof(conn_state->write_buf) - LWS_PRE - 1) {
+    if (!wsi || !conn_state || !message) {
         fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
         return -1;
     }
-
-    // Copy the message to the write buffer after LWS_PRE bytes
+    
+    // 确保缓冲区足够大
+    if (message_len > sizeof(conn_state->write_buf) - LWS_PRE) {
+        fprintf(stderr, "Error: Message too large (%zu bytes) for send buffer\n", message_len);
+        return -1;
+    }
+    
     memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
-
-    // For text messages, ensure null termination for logging
     if (!is_binary && message_len < sizeof(conn_state->write_buf) - LWS_PRE - 1) {
         conn_state->write_buf[LWS_PRE + message_len] = '\0';
     }
@@ -203,42 +241,142 @@ static int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, si
     return send_ws_message(wsi, conn_state, (const char *)binary_data, frame_size, 1);
 }
 
-static int send_wake_word_message(struct lws *wsi, connection_state_t *conn_state, const char *wake_word_text) {
-    if (!wsi || !conn_state || !wake_word_text) {
-        fprintf(stderr, "Error: Invalid parameters for send_wake_word_message\n");
+static int send_opus_frame(struct lws *wsi, connection_state_t *conn_state) {
+    if (!wsi || !conn_state) {
+        fprintf(stderr, "Error: Invalid parameters for send_opus_frame\n");
         return -1;
     }
     
-    // Ensure we have a valid session_id
-    if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: No session_id available for wake word message\n");
+    if (conn_state->opus_test_mode && conn_state->opus_input_file) {
+        size_t bytes_read = fread(conn_state->opus_frame_buffer, 1, OPUS_MAX_FRAME_SIZE, conn_state->opus_input_file);
+        if (bytes_read > 0) {
+            if (conn_state->opus_frames_sent == 0 && bytes_read >= 4) {
+                if (memcmp(conn_state->opus_frame_buffer, "OggS", 4) == 0) {
+                    fprintf(stderr, "ERROR: 输入文件似乎是OGG封装的Opus！\n");
+                    fprintf(stderr, "服务器期望接收原始的Opus帧，而不是OGG容器格式。\n");
+                    fprintf(stderr, "请先从OGG文件中提取原始的Opus帧。\n");
+                    return -1;
+                }
+            }
+            conn_state->opus_frame_size = bytes_read;
+
+            fprintf(stdout, "发送Opus帧 #%d (%zu 字节)\n", conn_state->opus_frames_sent + 1, bytes_read);
+            int result = send_ws_message(wsi, conn_state, (const char*)conn_state->opus_frame_buffer, bytes_read, 1);
+            if (result == 0) {
+                conn_state->opus_frames_sent++;
+                g_total_audio_bytes_sent += bytes_read;
+            }
+            return result;
+        }
         return -1;
+    } else {
+        // Fall back to dummy data
+        return send_binary_frame(wsi, conn_state, DUMMY_BINARY_FRAME_SIZE);
     }
-    
-    fprintf(stdout, "Sending wake word detection message with text: %s\n", wake_word_text);
-    
-    return send_json_message(wsi, conn_state, 
-                           "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"%s\"}", 
-                           conn_state->session_id, wake_word_text);
 }
 
-static int send_abort_message(struct lws *wsi, connection_state_t *conn_state, const char *reason) {
-    if (!wsi || !conn_state || !reason) {
-        fprintf(stderr, "Error: Invalid parameters for send_abort_message\n");
+static int send_stop_listening_message(struct lws *wsi, connection_state_t *conn_state) {
+    if (!wsi || !conn_state) {
+        fprintf(stderr, "Error: Invalid parameters for send_stop_listening_message\n");
         return -1;
     }
     
     // Ensure we have a valid session_id
     if (strlen(conn_state->session_id) == 0) {
-        fprintf(stderr, "Error: No session_id available for abort message\n");
+        fprintf(stderr, "Error: No session_id available for stop listening message\n");
         return -1;
     }
     
-    fprintf(stdout, "Sending abort message with reason: %s\n", reason);
+    fprintf(stdout, "Sending stop listening message\n");
     
+    char stop_msg[256];
+    snprintf(stop_msg, sizeof(stop_msg), 
+             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"stop\"}", 
+             conn_state->session_id);
+    
+    int result = send_ws_message(wsi, conn_state, stop_msg, strlen(stop_msg), 0);
+    if (result == 0) {
+        conn_state->listen_stopped = 1;
+        // Log the total audio duration
+        if (conn_state->audio_start_time > 0) {
+            uint64_t duration_ms = get_current_ms() - conn_state->audio_start_time;
+            fprintf(stdout, "Total audio transmission time: %llu ms (%.1f seconds)\n", 
+                   duration_ms, (double)duration_ms / 1000.0);
+        }
+    }
+    return result;
+}
+
+static int send_detect_message(struct lws *wsi, connection_state_t *conn_state, const char *text) {
+    if (!wsi || !conn_state || !text) {
+        fprintf(stderr, "Error: Invalid parameters for send_detect_message\n");
+        return -1;
+    }
+    
+    if (strlen(conn_state->session_id) == 0) {
+        fprintf(stderr, "Error: No session_id available for detect message\n");
+        return -1;
+    }
+    
+    fprintf(stdout, "Sending detect message with text: %s\n", text);
+    
+    char detect_msg[512];
+    snprintf(detect_msg, sizeof(detect_msg), 
+             "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"%s\"}", 
+             conn_state->session_id, text);
+    
+    int result = send_ws_message(wsi, conn_state, detect_msg, strlen(detect_msg), 0);
+    if (result == 0) {
+        conn_state->listen_stopped = 1;
+    }
+    return result;
+}
+
+static int send_chat_message(struct lws *wsi, connection_state_t *conn_state, const char *text) {
+    if (!wsi || !conn_state || !text) {
+        fprintf(stderr, "Error: Invalid parameters for send_chat_message\n");
+        return -1;
+    }
+    
+    // Ensure we have a valid session_id
+    if (strlen(conn_state->session_id) == 0) {
+        fprintf(stderr, "Error: No session_id available for chat message\n");
+        return -1;
+    }
+    
+    fprintf(stdout, "Sending text message for TTS: %s\n", text);
+    
+    // Format according to WebSocket protocol for text-to-speech
     return send_json_message(wsi, conn_state, 
-                           "{\"session_id\":\"%s\",\"type\":\"abort\",\"reason\":\"%s\"}", 
-                           conn_state->session_id, reason);
+                           "{\"session_id\":\"%s\","
+                           "\"type\":\"listen\","
+                           "\"mode\":\"manual\","
+                           "\"state\":\"detect\","
+                           "\"text\":\"%s\"}",
+                           conn_state->session_id, text);
+}
+
+static int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state) {
+    if (!wsi || !conn_state) {
+        fprintf(stderr, "Error: Invalid parameters for send_start_listening_message\n");
+        return -1;
+    }
+
+    if (strlen(conn_state->session_id) == 0) {
+        fprintf(stderr, "Error: Cannot send listen message, session_id is missing.\n");
+        return -1;
+    }
+
+    fprintf(stdout, "Sending 'listen' message (state: start).\n");
+
+    int result = send_json_message(wsi, conn_state,
+                                   "{\"type\":\"listen\",\"session_id\":\"%s\",\"state\":\"start\",\"mode\":\"manual\"}",
+                                   conn_state->session_id);
+    if (result == 0) {
+        conn_state->listen_sent = 1;
+        conn_state->listen_sent_time = time(NULL);
+    }
+    return result;
 }
 
 static void print_audio_params(const audio_params_t *params) {
@@ -307,36 +445,21 @@ static void handle_hello_message(struct lws *wsi, cJSON *json_response) {
         // Print the received audio parameters
         fprintf(stdout, "Received audio parameters from server:\n");
         print_audio_params(&conn_state->audio_params);
-    }
-
-    if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
-        if (!conn_state->server_hello_received) { // Process only if hello not already marked as received
-            conn_state->server_hello_received = 1;
-            fprintf(stdout, "Server HELLO received and validated.\n");
-
-            if (!conn_state->listen_sent) {
-                // Ensure we have a valid session_id
-                if (strlen(conn_state->session_id) == 0) {
-                    fprintf(stderr, "Error: No session_id available for listen message\n");
-                    return;
-                }
-                
-                // Send listen message with correct format according to protocol
-                if (send_json_message(wsi, conn_state, 
-                    "{\"session_id\":\"%s\",\"type\":\"listen\",\"state\":\"start\",\"mode\":\"manual\"}", 
-                    conn_state->session_id) == 0) {
-                    
-                    // Update connection state
-                    conn_state->listen_sent = 1;
-                    conn_state->listen_sent_time = time(NULL);
-                    conn_state->last_binary_frame_send_time_ms = get_current_ms();
-                } else {
-                    fprintf(stderr, "Error: Failed to send 'listen' message\n");
-                }
-            }
-        }
     } else {
-         fprintf(stderr, "Server HELLO received, but transport is not 'websocket' or invalid. Ignoring.\n");
+        fprintf(stdout, "  No audio_params in hello message, using defaults.\n");
+        print_audio_params(&conn_state->audio_params);
+    }
+    
+    // Validate transport type
+    if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
+        fprintf(stdout, "Server hello message is valid.\n");
+        conn_state->server_hello_received = 1;
+
+        // Per protocol, send 'listen' message after receiving server hello
+        send_start_listening_message(wsi, conn_state);
+    } else {
+        fprintf(stderr, "Error: Invalid or missing transport type in server hello.\n");
+        conn_state->should_close = 1;
     }
 }
 
@@ -423,22 +546,44 @@ static void handle_generic_message(struct lws *wsi, cJSON *json_response, const 
         fprintf(stdout, "  %s Message: %s\n", msg_type, json_str);
         free(json_str);
     }
+    
+    // For STT messages, extract and display the recognized text
+    if (strcmp(msg_type, "STT") == 0) {
+        const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(json_response, "text");
+        if (cJSON_IsString(text_item) && text_item->valuestring) {
+            // Save the recognized text in the connection state
+            strncpy(conn_state->stt_text, text_item->valuestring, sizeof(conn_state->stt_text) - 1);
+            conn_state->stt_text[sizeof(conn_state->stt_text) - 1] = '\0'; // Ensure null termination
+            fprintf(stdout, "  >>> STT Recognized Text: %s\n", conn_state->stt_text);
+        }
+    }
 }
 
 static void handle_tts_message(struct lws *wsi, cJSON *json_response) {
     // First use the generic handler for basic logging
     handle_generic_message(wsi, json_response, "TTS");
     
-    // Then handle TTS-specific fields
-    const cJSON *audio_item = cJSON_GetObjectItemCaseSensitive(json_response, "audio");
-    if (cJSON_IsString(audio_item) && audio_item->valuestring) {
-        fprintf(stdout, "    Received audio data (base64, %zu chars)\n", strlen(audio_item->valuestring));
+    // Get connection state
+    connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
+    if (!conn_state) {
+        fprintf(stderr, "Error: No connection state in handle_tts_message\n");
+        return;
     }
+    
+    // TTS messages are control messages only
+    // Actual audio data comes through binary frames
     
     // Check for state information
     const cJSON *state_item = cJSON_GetObjectItemCaseSensitive(json_response, "state");
     if (cJSON_IsString(state_item) && state_item->valuestring) {
         fprintf(stdout, "    TTS State: %s\n", state_item->valuestring);
+        
+        // Handle different TTS states
+        if (strcmp(state_item->valuestring, "start") == 0) {
+            fprintf(stdout, "    TTS playback starting, audio will come via binary frames\n");
+        } else if (strcmp(state_item->valuestring, "stop") == 0) {
+            fprintf(stdout, "    TTS playback stopped\n");
+        }
     }
     
     const cJSON *text_item = cJSON_GetObjectItemCaseSensitive(json_response, "text");
@@ -470,6 +615,29 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             // Initialize connection state
             memset(conn_state, 0, sizeof(connection_state_t));
             conn_state->connected = 1;
+            
+            // Try to open Opus input file
+            conn_state->opus_input_file = fopen(OPUS_INPUT_FILE, "rb");
+            if (conn_state->opus_input_file) {
+                // Get file size
+                fseek(conn_state->opus_input_file, 0, SEEK_END);
+                long file_size = ftell(conn_state->opus_input_file);
+                fseek(conn_state->opus_input_file, 0, SEEK_SET);
+                
+                fprintf(stdout, "Opened Opus input file: %s (size: %ld bytes)\n", OPUS_INPUT_FILE, file_size);
+                conn_state->opus_test_mode = 1;
+                
+                // Open output file for received audio
+                conn_state->opus_output_file = fopen(OPUS_OUTPUT_FILE, "wb");
+                if (conn_state->opus_output_file) {
+                    fprintf(stdout, "Opened Opus output file: %s\n", OPUS_OUTPUT_FILE);
+                } else {
+                    fprintf(stderr, "Warning: Could not open Opus output file: %s\n", OPUS_OUTPUT_FILE);
+                }
+            } else {
+                fprintf(stdout, "No Opus input file found (%s), will use dummy data\n", OPUS_INPUT_FILE);
+                conn_state->opus_test_mode = 0;
+            }
                 
             // Only send hello if not already sent
             if (!conn_state->hello_sent) {
@@ -493,9 +661,22 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             }
 
             if (lws_frame_is_binary(wsi)) {
-                fprintf(stdout, "Received BINARY data: %zu bytes\n", len);
-                // For a test client, we just log receipt of binary data.
-                // In a real application, this would be processed (e.g., as audio data).
+                fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
+                
+                // Binary frames contain Opus audio data from server
+                // Save to output file if available
+                if (conn_state->opus_output_file && len > 0) {
+                    size_t written = fwrite(in, 1, len, conn_state->opus_output_file);
+                    fprintf(stdout, "Saved %zu bytes of Opus audio to output file\n", written);
+                    g_total_audio_bytes_received += written;
+                    
+                    if (written != len) {
+                        fprintf(stderr, "Warning: Only wrote %zu of %zu bytes to output file\n", written, len);
+                    }
+                    
+                    // Flush to ensure data is written
+                    fflush(conn_state->opus_output_file);
+                }
             }
             else {
                 // Ensure the received data is properly null-terminated for logging
@@ -571,6 +752,16 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
             if (closed_state) {
                 closed_state->connected = 0;
+                
+                // Close any open files
+                if (closed_state->opus_input_file) {
+                    fclose(closed_state->opus_input_file);
+                    closed_state->opus_input_file = NULL;
+                }
+                if (closed_state->opus_output_file) {
+                    fclose(closed_state->opus_output_file);
+                    closed_state->opus_output_file = NULL;
+                }
             }
             interrupted = 1; // Signal to exit main loop
             break;
@@ -630,9 +821,150 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     write_state->hello_sent = 1;
                     write_state->hello_sent_time = time(NULL);
                     fprintf(stdout, "Client hello sent at %ld\n", (long)write_state->hello_sent_time);
-                } else if (write_state->listen_sent) {
-                    // This was the listen message
+                } else if (write_state->listen_sent && !write_state->write_is_binary) {
+                    // This was the listen message (not a binary frame)
                     fprintf(stdout, "Listen message sent successfully\n");
+                    
+                    // After sending listen message, initialize audio timing and request callback
+                    if (write_state->should_send_audio) {
+                        write_state->last_binary_frame_send_time_ms = get_current_ms();
+                        lws_callback_on_writable(wsi);
+                    }
+                }
+            } else if (write_state->should_send_audio && 
+                      !write_state->listen_stopped && 
+                      write_state->server_hello_received) {
+                // If we haven't sent the listen start message yet, send it first
+                if (!write_state->listen_sent) {
+                    char listen_start_msg[256];
+                    snprintf(listen_start_msg, sizeof(listen_start_msg),
+                            "{\"type\":\"listen\","
+                            "\"session_id\":\"%s\","
+                            "\"state\":\"start\","
+                            "\"mode\":\"manual\"}",
+                            write_state->session_id);
+                            
+                    int result = send_ws_message(wsi, write_state, listen_start_msg, 
+                                              strlen(listen_start_msg), 0);
+                    if (result == 0) {
+                        write_state->listen_sent = 1;
+                        fprintf(stdout, "Sent listen start message, preparing to send audio frames\n");
+                        // Request another callback to send the first audio frame
+                        lws_callback_on_writable(wsi);
+                    } else {
+                        fprintf(stderr, "Error sending listen start message\n");
+                    }
+                    break;
+                }
+                
+                // Check if we need to send abort message
+                if (write_state->should_send_abort) {
+                    write_state->should_send_abort = 0;
+                    char abort_msg[512];
+                    snprintf(abort_msg, sizeof(abort_msg),
+                            "{\"type\":\"abort\",\"session_id\":\"%s\",\"reason\":\"client_initiated_test\"}",
+                            write_state->session_id);
+                    fprintf(stdout, "Sending abort message...\n");
+                    send_ws_message(wsi, write_state, abort_msg, strlen(abort_msg), 0);
+                    // Close connection after a short delay
+                    write_state->should_close = 1;
+                    lws_callback_on_writable(wsi);
+                    break;
+                }
+                
+                // Check if we should close the connection
+                if (write_state->should_close) {
+                    fprintf(stdout, "Closing WebSocket connection...\n");
+                    // Return -1 to close the connection
+                    return -1;
+                }
+                
+                // If we get here, we've already sent the listen start message
+                // and are ready to send audio frames
+                // Send audio frames
+                uint64_t current_ms = get_current_ms();
+                
+                // Check if it's time to send the next audio frame
+                if (current_ms - write_state->last_binary_frame_send_time_ms >= BINARY_FRAME_SEND_INTERVAL_MS) {
+                    // Send an audio frame first
+                    int send_result;
+                    
+                    if (write_state->opus_test_mode) {
+                        // Send Opus frames from file
+                        if (write_state->opus_input_file && !feof(write_state->opus_input_file)) {
+                            send_result = send_opus_frame(wsi, write_state);
+                        } else {
+                            // If we've reached EOF, rewind to beginning
+                            if (write_state->opus_input_file) {
+                                rewind(write_state->opus_input_file);
+                                fprintf(stdout, "Rewinding Opus input file to continue sending\n");
+                                send_result = send_opus_frame(wsi, write_state);
+                            } else {
+                                send_result = -1;
+                            }
+                        }
+                    } else {
+                        // Send dummy frames
+                        send_result = send_binary_frame(wsi, write_state, DUMMY_BINARY_FRAME_SIZE);
+                        if (send_result == 0) {
+                            write_state->binary_frames_sent_count++;
+                        }
+                    }
+                    
+                    if (send_result == 0) {
+                        // If this is the first audio frame, set the start time
+                        if (write_state->audio_start_time == 0) {
+                            write_state->audio_start_time = current_ms;
+                            fprintf(stdout, "Started audio transmission at %llu ms\n", write_state->audio_start_time);
+                            fprintf(stdout, "  Will send audio for %d ms\n", AUDIO_SEND_DURATION_MS);
+                        }
+                        
+                        // Update the last frame send time
+                        write_state->last_binary_frame_send_time_ms = current_ms;
+                        
+                        // Calculate elapsed time in milliseconds
+                        uint64_t elapsed_ms = current_ms - write_state->audio_start_time;
+                        
+                        // Log frame information
+                        fprintf(stdout, "  Sent audio frame: total_sent=%u, remaining_time=%llums\n",
+                                (unsigned int)write_state->binary_frames_sent_count,
+                                AUDIO_SEND_DURATION_MS > elapsed_ms ? AUDIO_SEND_DURATION_MS - elapsed_ms : 0);
+                        uint64_t elapsed_seconds = elapsed_ms / 1000;
+                        fprintf(stdout, "Audio timing: elapsed=%llu ms (%llu seconds)\n", 
+                                elapsed_ms, elapsed_seconds);
+                        
+                        // 检查是否已经发送了足够时长的音频
+                        if (elapsed_ms >= AUDIO_SEND_DURATION_MS) {
+                            // Stop sending audio
+                            if (!write_state->listen_stopped) {
+                                fprintf(stdout, "Finished sending audio for %d ms (%.1f seconds)\n", 
+                                        AUDIO_SEND_DURATION_MS, (float)AUDIO_SEND_DURATION_MS/1000.0f);
+                                write_state->should_send_audio = 0;  // Stop audio sending
+                                
+                                // Send detect message with recognized text
+                                // Use the STT recognized text if available, otherwise use a default message
+                                const char *detect_text = (write_state->stt_text[0] != '\0') ? 
+                                    write_state->stt_text : "[No speech detected]";
+                                    
+                                if (send_detect_message(wsi, write_state, detect_text) == 0) {
+                                    write_state->listen_stopped = 1;
+                                    write_state->should_send_abort = 1;  // Schedule abort message
+                                    fprintf(stdout, "Sent detect message, scheduling abort message...\n");
+                                    lws_callback_on_writable(wsi);  // Request another callback for abort
+                                } else {
+                                    fprintf(stderr, "Error sending detect message\n");
+                                }
+                            }
+                        } else {
+                            // Request another writeable callback to continue sending
+                            lws_callback_on_writable(wsi);
+                        }
+                    } else {
+                        fprintf(stderr, "Error preparing audio frame\n");
+                    }
+                } else {
+                    // Not time yet, request another callback
+                    lws_callback_on_writable(wsi);
                 }
             }
             break;
@@ -705,6 +1037,48 @@ int main(int argc, char **argv) {
 #endif
     // Initialize random number generator with current time
     srand((unsigned int)time(NULL));
+    
+    // Print usage information
+    fprintf(stdout, "WebSocket Audio Test Client\n");
+    fprintf(stdout, "===========================\n");
+    
+#if TEST_MODE == TEST_MODE_TEXT
+    fprintf(stdout, "Test Mode: TEXT TO SPEECH\n");
+    fprintf(stdout, "Test Flow:\n");
+    fprintf(stdout, "1. Connect to WebSocket server and exchange hello messages\n");
+    fprintf(stdout, "2. Send a chat message to trigger TTS response\n");
+    fprintf(stdout, "3. Wait up to %d seconds for TTS audio\n", WAIT_FOR_RESPONSE_SECONDS);
+    fprintf(stdout, "4. Close connection\n\n");
+#else
+    fprintf(stdout, "Test Mode: AUDIO RECOGNITION\n");
+    fprintf(stdout, "Test Flow:\n");
+    fprintf(stdout, "1. Connect to WebSocket server and exchange hello messages\n");
+    fprintf(stdout, "2. Send 'listen start' message to begin audio streaming\n");
+    fprintf(stdout, "3. Send audio data for %d seconds\n", AUDIO_SEND_DURATION_SECONDS);
+    fprintf(stdout, "4. Send 'listen stop' message to end audio streaming\n");
+    fprintf(stdout, "5. Wait up to %d seconds for server responses (STT, TTS, etc.)\n", WAIT_FOR_RESPONSE_SECONDS);
+    fprintf(stdout, "6. Close connection\n\n");
+#endif
+    
+    fprintf(stdout, "Audio Files:\n");
+    fprintf(stdout, "- Input: '%s' (Opus audio to send)\n", OPUS_INPUT_FILE);
+    fprintf(stdout, "- Output: '%s' (Opus audio received from server)\n", OPUS_OUTPUT_FILE);
+    
+    fprintf(stdout, "\n!!! IMPORTANT: Audio Format Requirements !!!\n");
+    fprintf(stdout, "The input file must contain RAW Opus frames, NOT OGG-encapsulated Opus!\n");
+    fprintf(stdout, "- Expected: Raw Opus frames (60ms duration, ~960 bytes each at 16kHz)\n");
+    fprintf(stdout, "- NOT supported: .opus files (OGG container), .ogg files, or other containers\n");
+    fprintf(stdout, "\nTo extract raw Opus frames from an OGG Opus file:\n");
+    fprintf(stdout, "1. Use opusdec to decode to PCM: opusdec input.opus output.wav\n");
+    fprintf(stdout, "2. Use opusenc to encode raw frames: opusenc --raw --raw-rate 16000 --framesize 60 output.wav raw_opus.bin\n");
+    fprintf(stdout, "Or use FFmpeg: ffmpeg -i input.opus -f s16le -ar 16000 -ac 1 - | opusenc --raw --raw-rate 16000 --framesize 60 - raw_opus.bin\n");
+    
+#if TEST_MODE == TEST_MODE_TEXT
+    fprintf(stdout, "\nTo switch to audio recognition mode, change TEST_MODE to TEST_MODE_AUDIO in the code.\n\n");
+#else
+    fprintf(stdout, "\nIf no input file is found, dummy data will be sent instead.\n");
+    fprintf(stdout, "To test text-to-speech, change TEST_MODE to TEST_MODE_TEXT in the code.\n\n");
+#endif
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
     struct lws_context_creation_info info;
@@ -803,61 +1177,62 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Send dummy binary frames after 'listen' is sent and before 'wake word'
-        if (conn_state->connected && conn_state->listen_sent && 
-            conn_state->server_hello_received &&
-            !conn_state->wake_word_sent) {
-            // Send binary frames during the "active listening" phase before wake word
-            if (current_ms - conn_state->last_binary_frame_send_time_ms >= BINARY_FRAME_SEND_INTERVAL_MS) {
-                if (send_binary_frame(g_wsi, conn_state, 20) == 0) {
-                    // Update the last binary frame send time
-                    conn_state->last_binary_frame_send_time_ms = current_ms;
-                    conn_state->binary_frames_sent_count++;
-                    
-                    // If we've sent enough frames, move to the next state
-                    if (conn_state->binary_frames_sent_count >= 5) {
-                        fprintf(stdout, "Finished sending binary frames, will send wake word detection next\n");
-                    }
-                } else {
-                    fprintf(stderr, "Error sending binary frame\n");
-                }
-            }
-        }
-
-        // Check if it's time to send a 'wake word detected' message
-        if (conn_state->connected && conn_state->listen_sent && 
-            !conn_state->wake_word_sent && conn_state->server_hello_received) {
-            // Check time for wake word
-            if (time(NULL) - conn_state->listen_sent_time > WAKE_WORD_SEND_OFFSET_SECONDS) {
-                fprintf(stdout, "Sending 'listen state:detect' (wake word) message after delay...\n");
-                if (send_wake_word_message(g_wsi, conn_state, "你好小明") == 0) {
-                    // Update state
-                    conn_state->wake_word_sent = 1;
-                    conn_state->wake_word_sent_time = time(NULL);
-                } else {
-                    fprintf(stderr, "Error sending wake word message\n");
-                }
-            }
-        }
-
-        // Check if it's time to send an abort message
-        if (conn_state->connected && conn_state->listen_sent && 
-            conn_state->wake_word_sent && !conn_state->abort_sent &&
-            time(NULL) - conn_state->listen_sent_time > ABORT_SEND_OFFSET_SECONDS) {
-            fprintf(stdout, "Sending 'abort' message after delay...\n");
-            
-            if (send_abort_message(g_wsi, conn_state, "wake_word_detected") == 0) {
-                // Update state
-                conn_state->abort_sent = 1;
+#if TEST_MODE == TEST_MODE_TEXT
+        // In text test mode, just wait for responses
+        if (conn_state->connected && conn_state->test_message_sent) {
+            // Check if we've waited long enough for responses
+            if (time(NULL) - conn_state->audio_start_time >= WAIT_FOR_RESPONSE_SECONDS) {
+                fprintf(stdout, "\nText Test Summary:\n");
+                fprintf(stdout, "- Total audio bytes received: %d\n", g_total_audio_bytes_received);
+                fprintf(stdout, "- Waited %d seconds for server responses\n", WAIT_FOR_RESPONSE_SECONDS);
                 
-                // Close connection after abort
-                fprintf(stdout, "Closing connection after sending abort.\n");
-                lws_close_reason(g_wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char *)"Client abort", 12);
+                if (g_total_audio_bytes_received == 0) {
+                    fprintf(stdout, "\nNote: No audio data received from server.\n");
+                    fprintf(stdout, "The server may not support chat messages or TTS generation.\n");
+                }
+                
+                fprintf(stdout, "\nClosing connection...\n");
+                
+                // Close connection
+                lws_close_reason(g_wsi, LWS_CLOSE_STATUS_NORMAL, 
+                               (unsigned char *)"Test completed", 14);
                 interrupted = 1; // Signal to exit main loop
-            } else {
-                fprintf(stderr, "Error sending abort message\n");
             }
         }
+#else
+        // Just trigger writeable callback if we need to send audio
+        if (conn_state->connected && conn_state->should_send_audio && 
+            !conn_state->pending_write && g_wsi) {
+            lws_callback_on_writable(g_wsi);
+        }
+
+        // After stopping audio, wait for server responses
+        if (conn_state->connected && conn_state->listen_stopped) {
+            // Check if we've waited long enough for responses
+            if (time(NULL) - conn_state->audio_start_time >= 
+                (AUDIO_SEND_DURATION_SECONDS + WAIT_FOR_RESPONSE_SECONDS)) {
+                fprintf(stdout, "\nTest Summary:\n");
+                fprintf(stdout, "- Total audio bytes sent: %d\n", g_total_audio_bytes_sent);
+                fprintf(stdout, "- Total audio bytes received: %d\n", g_total_audio_bytes_received);
+                fprintf(stdout, "- Waited %d seconds for server responses\n", WAIT_FOR_RESPONSE_SECONDS);
+                
+                if (g_total_audio_bytes_received == 0) {
+                    fprintf(stdout, "\nNote: No audio data received from server.\n");
+                    fprintf(stdout, "This could mean:\n");
+                    fprintf(stdout, "1. The server didn't recognize any speech in the audio\n");
+                    fprintf(stdout, "2. The server needs more audio data or different format\n");
+                    fprintf(stdout, "3. The server is still processing\n");
+                }
+                
+                fprintf(stdout, "\nClosing connection...\n");
+                
+                // Close connection
+                lws_close_reason(g_wsi, LWS_CLOSE_STATUS_NORMAL, 
+                               (unsigned char *)"Test completed", 14);
+                interrupted = 1; // Signal to exit main loop
+            }
+        }
+#endif
     }
 
     fprintf(stdout, "Exiting main loop. Cleaning up...\n");
