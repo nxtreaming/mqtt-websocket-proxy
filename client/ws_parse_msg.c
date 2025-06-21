@@ -1,11 +1,7 @@
-/**
- * @file ws_handle_msg.c
- * @brief Implementation of WebSocket message handling functions
- */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "ws_handle_msg.h"
+#include "ws_parse_msg.h"
 
 static void print_audio_params(const audio_params_t *params) {
     if (!params) return;

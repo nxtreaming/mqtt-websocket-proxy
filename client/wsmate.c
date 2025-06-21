@@ -6,7 +6,7 @@
 #include <stdarg.h>
 
 #include "ws_send_msg.h"
-#include "ws_handle_msg.h"
+#include "ws_parse_msg.h"
 
 #ifdef _WIN32
 #include <Windows.h>
