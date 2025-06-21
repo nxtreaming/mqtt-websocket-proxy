@@ -693,34 +693,18 @@ int main(int argc, char **argv) {
     pthread_detach(service_thread_id);
 #endif
 
-    // Main loop for the program
-    int no_connection_printed = 0;
-    
+    // Main loop for the program. This loop only handles user input.
+    // All WebSocket I/O is handled by the lws service thread.
     while (!interrupted) {
-        // Process user input
+        // Process user input from the console
         handle_interactive_mode();
-        
-        // Check if we need to send any pending messages
-        if (g_wsi) {
-            connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
-            if (conn_state && conn_state->connected) {
-                lws_callback_on_writable(g_wsi);
-            }
-        }
 
-        unsigned long current_ms = get_current_ms();
-
-        // Get connection state from the active WebSocket instance
-        connection_state_t *conn_state = NULL;
-        if (g_wsi)
-            conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
-        if (!conn_state) {
-            if (!no_connection_printed) {
-                fprintf(stderr, "Error: No connection state in main loop, trying...\n");
-                no_connection_printed = 1;
-            }
-            continue;
-        }
+        // A short sleep to prevent this loop from consuming 100% CPU.
+#ifdef _WIN32
+        Sleep(50); // 50 ms
+#else
+        usleep(50000); // 50 ms
+#endif
     }
 
     fprintf(stdout, "Exiting main loop. Cleaning up...\n");
