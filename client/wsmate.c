@@ -104,6 +104,7 @@ typedef struct {
     
     // Connection control
     int should_close;        // Flag to indicate connection should be closed
+    int interactive_mode;    // Flag to indicate interactive mode is active
     
     // Audio control
     int should_send_audio;  // Flag to control audio frame sending
@@ -167,7 +168,6 @@ static int send_ws_message(struct lws* wsi, connection_state_t* conn_state, cons
         return -1;
     }
     
-    // 确保缓冲区足够大
     if (message_len > sizeof(conn_state->write_buf) - LWS_PRE) {
         fprintf(stderr, "Error: Message too large (%zu bytes) for send buffer\n", message_len);
         return -1;
@@ -993,6 +993,140 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     return 0;
 }
 
+// Function to print help information
+static void print_help(void) {
+    fprintf(stdout, "\nAvailable commands:\n");
+    fprintf(stdout, "  help                 - Show this help message\n");
+    fprintf(stdout, "  hello               - Send hello message\n");
+    fprintf(stdout, "  listen start        - Start listening (audio mode)\n");
+    fprintf(stdout, "  listen stop         - Stop listening\n");
+    fprintf(stdout, "  detect <text>       - Send detect message with text\n");
+    fprintf(stdout, "  chat <message>      - Send a chat message\n");
+    fprintf(stdout, "  abort               - Send abort message and close connection\n");
+    fprintf(stdout, "  exit                - Close connection and exit\n");
+    fprintf(stdout, "\n");
+}
+
+// Function to process user commands
+static void process_command(struct lws *wsi, connection_state_t *conn_state, const char *command) {
+    if (!command || !*command) return;
+    
+    char cmd[256] = {0};
+    char param[1024] = {0};
+    
+    // Simple command parsing
+    int num_matched = sscanf(command, "%255s %1023[^\n]", cmd, param);
+    
+    if (strcmp(cmd, "help") == 0) {
+        print_help();
+    } 
+    else if (strcmp(cmd, "hello") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
+            conn_state->hello_sent = 1;
+            fprintf(stdout, "Sent hello message\n");
+        }
+    }
+    else if (strcmp(cmd, "listen") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        
+        if (strcmp(param, "start") == 0) {
+            send_start_listening_message(wsi, conn_state);
+        } 
+        else if (strcmp(param, "stop") == 0) {
+            send_stop_listening_message(wsi, conn_state);
+        } 
+        else {
+            fprintf(stderr, "Unknown listen command. Use 'listen start' or 'listen stop'\n");
+        }
+    }
+    else if (strcmp(cmd, "detect") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        if (strlen(param) == 0) {
+            fprintf(stderr, "Please provide text to detect\n");
+            return;
+        }
+        send_detect_message(wsi, conn_state, param);
+    }
+    else if (strcmp(cmd, "chat") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        if (strlen(param) == 0) {
+            fprintf(stderr, "Please provide a message to send\n");
+            return;
+        }
+        send_chat_message(wsi, conn_state, param);
+    }
+    else if (strcmp(cmd, "abort") == 0) {
+        if (!conn_state->connected) {
+            fprintf(stderr, "Not connected to server\n");
+            return;
+        }
+        conn_state->should_send_abort = 1;
+        lws_callback_on_writable(wsi);
+        fprintf(stdout, "Abort message queued\n");
+    }
+    else if (strcmp(cmd, "exit") == 0) {
+        interrupted = 1;
+        if (conn_state->connected && wsi) {
+            lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char *)"User exit", 9);
+        }
+    }
+    else {
+        fprintf(stderr, "Unknown command: %s. Type 'help' for available commands.\n", cmd);
+    }
+}
+
+// Function to handle a single interactive command
+static void handle_interactive_mode() {
+    static int first_run = 1;
+    char input[1024] = {0};
+    
+    if (first_run) {
+        fprintf(stdout, "\n=== Interactive Mode ===\n");
+        fprintf(stdout, "Type 'help' for available commands\n");
+        first_run = 0;
+    }
+    
+    fprintf(stdout, "\n> ");
+    fflush(stdout);
+    
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+        // Handle EOF (Ctrl+D)
+        fprintf(stdout, "\n");
+        interrupted = 1;
+        return;
+    }
+    
+    // Remove trailing newline
+    input[strcspn(input, "\n")] = 0;
+    
+    if (strlen(input) == 0) {
+        return;
+    }
+    
+    // Process the command
+    connection_state_t *conn_state = NULL;
+    if (g_wsi) {
+        conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
+        if (conn_state) {
+            process_command(g_wsi, conn_state, input);
+        }
+    }
+}
+
+// Service thread function - Handles WebSocket service
 #ifdef _WIN32
 static DWORD WINAPI service_thread_func(LPVOID arg)
 #else
@@ -1000,11 +1134,29 @@ static void *service_thread_func(void *arg)
 #endif
 {
     struct lws_context *context = (struct lws_context *)arg;
-    lwsl_user("Service thread started.\n");
+    lwsl_user("WebSocket service thread started.\n");
+    
+    // Main WebSocket service loop
     while (!interrupted && context) {
-        lws_service(context, 50);
+        // Process WebSocket events with a 50ms timeout
+        int result = lws_service(context, 50);
+        
+        // Check for pending writes
+        if (g_wsi) {
+            connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
+            if (conn_state && conn_state->pending_write) {
+                lws_callback_on_writable(g_wsi);
+            }
+        }
+        
+        // Check for errors
+        if (result < 0) {
+            lwsl_err("lws_service returned error: %d\n", result);
+            break;
+        }
     }
-    lwsl_user("Service thread exiting.\n");
+    
+    lwsl_user("WebSocket service thread exiting.\n");
     return 0;
 }
 
@@ -1018,61 +1170,19 @@ static struct lws_protocols protocols[] = {
     { NULL, NULL, 0, 0 } // Terminator
 };
 
-#ifdef ENABLE_WEBSOCKET_VERBOSE
-static void lws_log_emit_cb(int level, const char* line)
-{
-   fprintf(stderr, "%s", line);               
-}
-#endif
-
 int main(int argc, char **argv) {
-#ifdef ENABLE_WEBSOCKET_VERBOSE
-    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_PARSER |
-        LLL_HEADER | LLL_INFO | LLL_CLIENT, lws_log_emit_cb);
-#endif
-
 #ifdef _WIN32
     // Set console to UTF-8 to display Chinese characters correctly
     SetConsoleOutputCP(CP_UTF8);
 #endif
     // Initialize random number generator with current time
     srand((unsigned int)time(NULL));
-    
-    // Print usage information
-    fprintf(stdout, "WebSocket Audio Test Client\n");
-    fprintf(stdout, "===========================\n");
-    
-#if TEST_MODE == TEST_MODE_TEXT
-    fprintf(stdout, "Test Mode: TEXT TO SPEECH\n");
-    fprintf(stdout, "Test Flow:\n");
-    fprintf(stdout, "1. Connect to WebSocket server and exchange hello messages\n");
-    fprintf(stdout, "2. Send a chat message to trigger TTS response\n");
-    fprintf(stdout, "3. Wait up to %d seconds for TTS audio\n", WAIT_FOR_RESPONSE_SECONDS);
-    fprintf(stdout, "4. Close connection\n\n");
-#else
-    fprintf(stdout, "Test Mode: AUDIO RECOGNITION\n");
-    fprintf(stdout, "Test Flow:\n");
-    fprintf(stdout, "1. Connect to WebSocket server and exchange hello messages\n");
-    fprintf(stdout, "2. Send 'listen start' message to begin audio streaming\n");
-    fprintf(stdout, "3. Send audio data for %d seconds\n", AUDIO_SEND_DURATION_SECONDS);
-    fprintf(stdout, "4. Send 'listen stop' message to end audio streaming\n");
-    fprintf(stdout, "5. Wait up to %d seconds for server responses (STT, TTS, etc.)\n", WAIT_FOR_RESPONSE_SECONDS);
-    fprintf(stdout, "6. Close connection\n\n");
-#endif
-    
-    fprintf(stdout, "Audio Files:\n");
-    fprintf(stdout, "- Input: '%s' (Opus audio to send)\n", OPUS_INPUT_FILE);
-    fprintf(stdout, "- Output: '%s' (Opus audio received from server)\n", OPUS_OUTPUT_FILE);
-    
-    fprintf(stdout, "\n!!! IMPORTANT: Audio Format Requirements !!!\n");
-    fprintf(stdout, "The input file must contain RAW Opus frames, NOT OGG-encapsulated Opus!\n");
-    fprintf(stdout, "- Expected: Raw Opus frames (60ms duration, ~960 bytes each at 16kHz)\n");
-    fprintf(stdout, "- NOT supported: .opus files (OGG container), .ogg files, or other containers\n");
-    fprintf(stdout, "\nTo extract raw Opus frames from an OGG Opus file:\n");
-    fprintf(stdout, "1. Use opusdec to decode to PCM: opusdec input.opus output.wav\n");
-    fprintf(stdout, "2. Use opusenc to encode raw frames: opusenc --raw --raw-rate 16000 --framesize 60 output.wav raw_opus.bin\n");
-    fprintf(stdout, "Or use FFmpeg: ffmpeg -i input.opus -f s16le -ar 16000 -ac 1 - | opusenc --raw --raw-rate 16000 --framesize 60 - raw_opus.bin\n");
-    
+       
+    fprintf(stdout, "Interactive WebSocket Client\n");
+    fprintf(stdout, "==========================\n");
+    fprintf(stdout, "Connecting to %s:%d%s\n", SERVER_ADDRESS, SERVER_PORT, SERVER_PATH);
+    fprintf(stdout, "Type 'help' for available commands\n\n");
+        
 #if TEST_MODE == TEST_MODE_TEXT
     fprintf(stdout, "\nTo switch to audio recognition mode, change TEST_MODE to TEST_MODE_AUDIO in the code.\n\n");
 #else
@@ -1122,7 +1232,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Start service thread
+    // Start service thread for WebSocket handling
 #ifdef _WIN32
     service_thread_handle = CreateThread(NULL, 0, service_thread_func, (LPVOID)g_context, 0, NULL);
     if (!service_thread_handle) {
@@ -1136,17 +1246,23 @@ int main(int argc, char **argv) {
         lws_context_destroy(g_context);
         return 1;
     }
+    pthread_detach(service_thread_id);
 #endif
 
+    // Main loop for the program
     int no_connection_printed = 0;
-
+    
     while (!interrupted) {
-        // Add a small delay to prevent busy-waiting in the main loop.
-#if defined(_WIN32)
-        Sleep(10);
-#else
-        usleep(10000);
-#endif
+        // Process user input
+        handle_interactive_mode();
+        
+        // Check if we need to send any pending messages
+        if (g_wsi) {
+            connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
+            if (conn_state && conn_state->connected) {
+                lws_callback_on_writable(g_wsi);
+            }
+        }
 
         unsigned long current_ms = get_current_ms();
 
@@ -1238,12 +1354,13 @@ int main(int argc, char **argv) {
     fprintf(stdout, "Exiting main loop. Cleaning up...\n");
 
     // Signal the service thread to stop and wait for it
-    interrupted = 1;
-
     if (g_context) {
-        lwsl_user("Cancelling service for context from main thread.\n");
+        lwsl_user("Shutting down WebSocket service...\n");
         // Wake up lws_service in the other thread
         lws_cancel_service(g_context);
+        
+        // Set interrupted flag to signal the service thread to exit
+        interrupted = 1;
     }
 
 #ifdef _WIN32
