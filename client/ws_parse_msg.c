@@ -23,6 +23,33 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
     const cJSON *transport_item = cJSON_GetObjectItemCaseSensitive(json_response, "transport");
     const cJSON *session_id_item = cJSON_GetObjectItemCaseSensitive(json_response, "session_id");
     const cJSON *audio_params_item = cJSON_GetObjectItemCaseSensitive(json_response, "audio_params");
+    const cJSON *version_item = cJSON_GetObjectItemCaseSensitive(json_response, "version");
+    const cJSON *features_item = cJSON_GetObjectItemCaseSensitive(json_response, "features");
+    
+    // Parse protocol version
+    if (cJSON_IsNumber(version_item)) {
+        conn_state->protocol_version = version_item->valueint;
+        fprintf(stdout, "  Protocol version: %d\n", conn_state->protocol_version);
+    }
+    
+    // Parse server features
+    if (cJSON_IsObject(features_item)) {
+        const cJSON *mcp_feature = cJSON_GetObjectItemCaseSensitive(features_item, "mcp");
+        const cJSON *stt_feature = cJSON_GetObjectItemCaseSensitive(features_item, "stt");
+        const cJSON *tts_feature = cJSON_GetObjectItemCaseSensitive(features_item, "tts");
+        const cJSON *llm_feature = cJSON_GetObjectItemCaseSensitive(features_item, "llm");
+        
+        conn_state->features_mcp = cJSON_IsTrue(mcp_feature) ? 1 : 0;
+        conn_state->features_stt = cJSON_IsTrue(stt_feature) ? 1 : 0;
+        conn_state->features_tts = cJSON_IsTrue(tts_feature) ? 1 : 0;
+        conn_state->features_llm = cJSON_IsTrue(llm_feature) ? 1 : 0;
+        
+        fprintf(stdout, "  Server features: MCP=%s, STT=%s, TTS=%s, LLM=%s\n",
+                conn_state->features_mcp ? "yes" : "no",
+                conn_state->features_stt ? "yes" : "no", 
+                conn_state->features_tts ? "yes" : "no",
+                conn_state->features_llm ? "yes" : "no");
+    }
     
     // Parse session ID
     if (cJSON_IsString(session_id_item) && (session_id_item->valuestring != NULL)) {
@@ -39,12 +66,6 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
         const cJSON *sample_rate = cJSON_GetObjectItemCaseSensitive(audio_params_item, "sample_rate");
         const cJSON *channels = cJSON_GetObjectItemCaseSensitive(audio_params_item, "channels");
         const cJSON *frame_duration = cJSON_GetObjectItemCaseSensitive(audio_params_item, "frame_duration");
-        
-        // Set default values first
-        strncpy(conn_state->audio_params.format, "opus", sizeof(conn_state->audio_params.format));
-        conn_state->audio_params.sample_rate = 16000;
-        conn_state->audio_params.channels = 1;
-        conn_state->audio_params.frame_duration = 60;
         
         // Override with server values if provided
         if (cJSON_IsString(format) && format->valuestring != NULL) {
@@ -76,12 +97,14 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
     // Validate transport type
     if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
         fprintf(stdout, "Server hello message is valid.\n");
-        conn_state->server_hello_received = 1;
+        change_websocket_state(conn_state, WS_STATE_AUTHENTICATED);
 
         // MUST enter listening state: start, otherwise the connection will be closed after 10s
         send_start_listening_message(wsi, conn_state);
+        change_websocket_state(conn_state, WS_STATE_LISTENING);
     } else {
         fprintf(stderr, "Error: Invalid or missing transport type in server hello.\n");
+        change_websocket_state(conn_state, WS_STATE_ERROR);
         conn_state->should_close = 1;
     }
 }

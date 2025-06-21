@@ -51,7 +51,7 @@ static struct lws *g_wsi = NULL;
 static const char *hello_msg = 
     "{\"type\":\"hello\","
     "\"version\":1,"
-    "\"features\":{\"mcp\":true},"
+    "\"features\":{\"mcp\":true,\"llm\":true,\"stt\":true,\"tts\":true},"
     "\"transport\":\"websocket\","
     "\"audio_params\":{"
         "\"format\":\"opus\","
@@ -106,6 +106,13 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     switch (reason) {
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
             fprintf(stderr, "CLIENT_CONNECTION_ERROR: %s\n", in ? (char *)in : "(null)");
+            // Try to get connection state and update it to error state
+            if (g_wsi) {
+                connection_state_t *error_state = (connection_state_t *)lws_wsi_user(g_wsi);
+                if (error_state) {
+                    change_websocket_state(error_state, WS_STATE_ERROR);
+                }
+            }
             interrupted = 1;
             break;
 
@@ -122,16 +129,18 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 return -1;
             }
             
-            // Initialize connection state
-            memset(conn_state, 0, sizeof(connection_state_t));
-            conn_state->connected = 1;
+            // Initialize connection state using the new state management
+            init_connection_state(conn_state);
+            change_websocket_state(conn_state, WS_STATE_CONNECTED);
             
             // Send hello message
             if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
-                conn_state->hello_sent = 1;
+                change_websocket_state(conn_state, WS_STATE_HELLO_SENT);
+                conn_state->hello_sent_time = time(NULL);
                 fprintf(stdout, "Client hello message prepared\n");
             } else {
                 fprintf(stderr, "Error: Failed to prepare hello message\n");
+                change_websocket_state(conn_state, WS_STATE_ERROR);
             }
                 
             break;
@@ -196,7 +205,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             g_wsi = NULL;
             connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
             if (closed_state) {
-                closed_state->connected = 0;
+                change_websocket_state(closed_state, WS_STATE_DISCONNECTED);
             }
             interrupted = 1;
             break;
@@ -341,6 +350,7 @@ static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const 
 static void handle_abort_reason(struct lws* wsi, connection_state_t* conn_state, const char* command);
 static void handle_mcp(struct lws* wsi, connection_state_t* conn_state, const char* command);
 static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_status(struct lws* wsi, connection_state_t* conn_state, const char* command);
 
 // Command handler function pointer type
 typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
@@ -362,6 +372,7 @@ static const command_entry_t command_table[] = {
     {"abort",        handle_abort,        1},
     {"abort-reason", handle_abort_reason, 1},
     {"mcp",          handle_mcp,          1},
+    {"status",       handle_status,       1},
     {"exit",         handle_exit,         0}
 };
 
@@ -376,6 +387,7 @@ static void print_help(void) {
     fprintf(stdout, "  abort               - Send abort message and close connection\n");
     fprintf(stdout, "  abort-reason <reason> - Send abort message with reason\n");
     fprintf(stdout, "  mcp <payload>       - Send MCP message with JSON-RPC payload\n");
+    fprintf(stdout, "  status              - Show current connection status\n");
     fprintf(stdout, "  exit                - Close connection and exit\n");
     fprintf(stdout, "\n");
 }
@@ -387,17 +399,34 @@ static void handle_help(struct lws* wsi, connection_state_t* conn_state, const c
 
 static void handle_hello(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
-        conn_state->hello_sent = 1;
+        change_websocket_state(conn_state, WS_STATE_HELLO_SENT);
+        conn_state->hello_sent_time = time(NULL);
         fprintf(stdout, "Sent hello message\n");
+    } else {
+        change_websocket_state(conn_state, WS_STATE_ERROR);
+        fprintf(stderr, "Failed to send hello message\n");
     }
 }
 
 static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* param = extract_command_param(command, "listen");
     if (param && strcmp(param, "start") == 0) {
-        send_start_listening_message(wsi, conn_state);
+        if (conn_state->current_state == WS_STATE_AUTHENTICATED || 
+            conn_state->current_state == WS_STATE_LISTENING) {
+            send_start_listening_message(wsi, conn_state);
+            change_websocket_state(conn_state, WS_STATE_LISTENING);
+        } else {
+            fprintf(stderr, "Cannot start listening in current state: %s\n", 
+                   websocket_state_to_string(conn_state->current_state));
+        }
     } else if (param && strcmp(param, "stop") == 0) {
-        send_stop_listening_message(wsi, conn_state);
+        if (conn_state->current_state == WS_STATE_LISTENING) {
+            send_stop_listening_message(wsi, conn_state);
+            change_websocket_state(conn_state, WS_STATE_AUTHENTICATED);
+        } else {
+            fprintf(stderr, "Cannot stop listening in current state: %s\n", 
+                   websocket_state_to_string(conn_state->current_state));
+        }
     } else {
         fprintf(stderr, "Unknown listen command. Use 'listen start' or 'listen stop'\n");
     }
@@ -406,7 +435,13 @@ static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const
 static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* text = extract_command_param(command, "detect");
     if (text && *text) {
-        send_detect_message(wsi, conn_state, text);
+        if (conn_state->current_state == WS_STATE_LISTENING) {
+            send_detect_message(wsi, conn_state, text);
+            change_websocket_state(conn_state, WS_STATE_SPEAKING);
+        } else {
+            fprintf(stderr, "Cannot send detect message in current state: %s\n", 
+                   websocket_state_to_string(conn_state->current_state));
+        }
     } else {
         fprintf(stderr, "Please provide text to detect\n");
     }
@@ -415,22 +450,44 @@ static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const
 static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* text = extract_command_param(command, "chat");
     if (text && *text) {
-        send_chat_message(wsi, conn_state, text);
+        if (conn_state->current_state == WS_STATE_AUTHENTICATED || 
+            conn_state->current_state == WS_STATE_LISTENING ||
+            conn_state->current_state == WS_STATE_SPEAKING) {
+            send_chat_message(wsi, conn_state, text);
+            // Chat doesn't change the primary state, but we could add a sub-state if needed
+        } else {
+            fprintf(stderr, "Cannot send chat message in current state: %s\n", 
+                   websocket_state_to_string(conn_state->current_state));
+        }
     } else {
         fprintf(stderr, "Please provide a message to send\n");
     }
 }
 
 static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    conn_state->should_send_abort = 1;
-    lws_callback_on_writable(wsi);
-    fprintf(stdout, "Abort message queued\n");
+    if (conn_state->current_state == WS_STATE_LISTENING || 
+        conn_state->current_state == WS_STATE_SPEAKING) {
+        conn_state->should_send_abort = 1;
+        lws_callback_on_writable(wsi);
+        change_websocket_state(conn_state, WS_STATE_CLOSING);
+        fprintf(stdout, "Abort message queued\n");
+    } else {
+        fprintf(stderr, "Cannot send abort in current state: %s\n", 
+               websocket_state_to_string(conn_state->current_state));
+    }
 }
 
 static void handle_abort_reason(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* reason = extract_command_param(command, "abort-reason");
     if (reason && *reason) {
-        send_abort_message_with_reason(wsi, conn_state, reason);
+        if (conn_state->current_state == WS_STATE_LISTENING || 
+            conn_state->current_state == WS_STATE_SPEAKING) {
+            send_abort_message_with_reason(wsi, conn_state, reason);
+            change_websocket_state(conn_state, WS_STATE_CLOSING);
+        } else {
+            fprintf(stderr, "Cannot send abort in current state: %s\n", 
+                   websocket_state_to_string(conn_state->current_state));
+        }
     } else {
         fprintf(stderr, "Please provide a reason for abort\n");
     }
@@ -445,9 +502,33 @@ static void handle_mcp(struct lws* wsi, connection_state_t* conn_state, const ch
     }
 }
 
+static void handle_status(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    if (!conn_state) {
+        fprintf(stdout, "Status: No connection state available\n");
+        return;
+    }
+    
+    fprintf(stdout, "=== Connection Status ===\n");
+    fprintf(stdout, "Current State: %s\n", websocket_state_to_string(conn_state->current_state));
+    fprintf(stdout, "Previous State: %s\n", websocket_state_to_string(conn_state->previous_state));
+    fprintf(stdout, "Protocol Version: %d\n", conn_state->protocol_version);
+    fprintf(stdout, "Session ID: %s\n", conn_state->session_id[0] ? conn_state->session_id : "(none)");
+    fprintf(stdout, "Features: MCP=%s, STT=%s, TTS=%s, LLM=%s\n",
+            conn_state->features_mcp ? "yes" : "no",
+            conn_state->features_stt ? "yes" : "no", 
+            conn_state->features_tts ? "yes" : "no",
+            conn_state->features_llm ? "yes" : "no");
+    fprintf(stdout, "Audio Format: %s, Sample Rate: %d Hz, Channels: %d\n",
+            conn_state->audio_params.format,
+            conn_state->audio_params.sample_rate,
+            conn_state->audio_params.channels);
+    fprintf(stdout, "========================\n");
+}
+
 static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     interrupted = 1;
-    if (conn_state && conn_state->connected && wsi) {
+    if (conn_state && wsi) {
+        change_websocket_state(conn_state, WS_STATE_CLOSING);
         lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char*)"User exit", 9);
     }
 }
@@ -464,7 +545,9 @@ static void process_command(struct lws* wsi, connection_state_t* conn_state, con
 
     for (size_t i = 0; i < sizeof(command_table) / sizeof(command_table[0]); ++i) {
         if (strcmp(cmd, command_table[i].name) == 0) {
-            if (command_table[i].requires_connection && (!conn_state || !conn_state->connected)) {
+            if (command_table[i].requires_connection && (!conn_state || 
+                conn_state->current_state == WS_STATE_DISCONNECTED || 
+                conn_state->current_state == WS_STATE_ERROR)) {
                 fprintf(stderr, "Not connected to server. Command '%s' requires a connection.\n", cmd);
                 return;
             }
@@ -600,12 +683,16 @@ int main(int argc, char **argv) {
     // as libwebsockets will handle it based on the per_session_data_size in protocols[]
     
     fprintf(stdout, "Connecting to %s:%d%s\n", conn_info.address, conn_info.port, conn_info.path);
-    if (!lws_client_connect_via_info(&conn_info)) {
+    struct lws *client_wsi = lws_client_connect_via_info(&conn_info);
+    if (!client_wsi) {
         fprintf(stderr, "lws_client_connect_via_info failed\n");
         lws_context_destroy(g_context);
         g_context = NULL;
         return 1;
     }
+    
+    // Initialize the global WebSocket instance for state tracking
+    g_wsi = client_wsi;
 
     // Start service thread for WebSocket handling
 #ifdef _WIN32
@@ -627,6 +714,20 @@ int main(int argc, char **argv) {
     // Main loop for the program. This loop only handles user input.
     // All WebSocket I/O is handled by the lws service thread.
     while (!interrupted) {
+        // Check for hello timeout (10 seconds)
+        if (g_wsi) {
+            connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(g_wsi);
+            if (conn_state && conn_state->current_state == WS_STATE_HELLO_SENT) {
+                time_t current_time = time(NULL);
+                if (current_time - conn_state->hello_sent_time > 10) {
+                    fprintf(stderr, "Timeout: No server hello response within 10 seconds\n");
+                    change_websocket_state(conn_state, WS_STATE_ERROR);
+                    interrupted = 1;
+                    break;
+                }
+            }
+        }
+        
         // Process user input from the console
         handle_interactive_mode();
 

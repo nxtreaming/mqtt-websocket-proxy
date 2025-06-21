@@ -248,3 +248,132 @@ int send_mcp_message(struct lws *wsi, connection_state_t *conn_state, const char
 
     return send_json_object(wsi, conn_state, root);
 }
+
+void init_connection_state(connection_state_t *conn_state) {
+    if (!conn_state) return;
+    
+    memset(conn_state, 0, sizeof(connection_state_t));
+    conn_state->current_state = WS_STATE_DISCONNECTED;
+    conn_state->previous_state = WS_STATE_DISCONNECTED;
+    
+    // Set default audio parameters
+    strncpy(conn_state->audio_params.format, "opus", sizeof(conn_state->audio_params.format) - 1);
+    conn_state->audio_params.sample_rate = 16000;
+    conn_state->audio_params.channels = 1;
+    conn_state->audio_params.frame_duration = 60;
+    
+    // Initialize protocol compliance tracking
+    conn_state->protocol_version = 1;
+    conn_state->features_mcp = 1;
+    conn_state->features_stt = 1;
+    conn_state->features_tts = 1;
+    conn_state->features_llm = 1;
+}
+
+int change_websocket_state(connection_state_t *conn_state, websocket_state_t new_state) {
+    if (!conn_state) return -1;
+    
+    if (!is_valid_state_transition(conn_state->current_state, new_state)) {
+        fprintf(stderr, "Invalid state transition from %s to %s\n", 
+                websocket_state_to_string(conn_state->current_state),
+                websocket_state_to_string(new_state));
+        return -1;
+    }
+    
+    conn_state->previous_state = conn_state->current_state;
+    conn_state->current_state = new_state;
+    
+    fprintf(stdout, "State changed: %s -> %s\n", 
+            websocket_state_to_string(conn_state->previous_state),
+            websocket_state_to_string(conn_state->current_state));
+    
+    // Update legacy state flags for compatibility
+    switch (new_state) {
+        case WS_STATE_CONNECTED:
+            conn_state->connected = 1;
+            break;
+        case WS_STATE_HELLO_SENT:
+            conn_state->hello_sent = 1;
+            break;
+        case WS_STATE_AUTHENTICATED:
+            conn_state->server_hello_received = 1;
+            break;
+        case WS_STATE_LISTENING:
+            conn_state->listen_sent = 1;
+            break;
+        case WS_STATE_DISCONNECTED:
+        case WS_STATE_CLOSING:
+            conn_state->connected = 0;
+            break;
+        default:
+            break;
+    }
+    
+    return 0;
+}
+
+const char* websocket_state_to_string(websocket_state_t state) {
+    switch (state) {
+        case WS_STATE_DISCONNECTED: return "DISCONNECTED";
+        case WS_STATE_CONNECTING: return "CONNECTING";
+        case WS_STATE_CONNECTED: return "CONNECTED";
+        case WS_STATE_HELLO_SENT: return "HELLO_SENT";
+        case WS_STATE_AUTHENTICATED: return "AUTHENTICATED";
+        case WS_STATE_LISTENING: return "LISTENING";
+        case WS_STATE_SPEAKING: return "SPEAKING";
+        case WS_STATE_ERROR: return "ERROR";
+        case WS_STATE_CLOSING: return "CLOSING";
+        default: return "UNKNOWN";
+    }
+}
+
+int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to_state) {
+    // Define valid state transitions based on the WebSocket protocol
+    switch (from_state) {
+        case WS_STATE_DISCONNECTED:
+            return (to_state == WS_STATE_CONNECTING);
+            
+        case WS_STATE_CONNECTING:
+            return (to_state == WS_STATE_CONNECTED || 
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_DISCONNECTED);
+            
+        case WS_STATE_CONNECTED:
+            return (to_state == WS_STATE_HELLO_SENT || 
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_CLOSING);
+            
+        case WS_STATE_HELLO_SENT:
+            return (to_state == WS_STATE_AUTHENTICATED || 
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_CLOSING);
+            
+        case WS_STATE_AUTHENTICATED:
+            return (to_state == WS_STATE_LISTENING || 
+                    to_state == WS_STATE_SPEAKING ||
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_CLOSING);
+            
+        case WS_STATE_LISTENING:
+            return (to_state == WS_STATE_SPEAKING || 
+                    to_state == WS_STATE_AUTHENTICATED ||
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_CLOSING);
+            
+        case WS_STATE_SPEAKING:
+            return (to_state == WS_STATE_LISTENING || 
+                    to_state == WS_STATE_AUTHENTICATED ||
+                    to_state == WS_STATE_ERROR || 
+                    to_state == WS_STATE_CLOSING);
+            
+        case WS_STATE_ERROR:
+            return (to_state == WS_STATE_CLOSING || 
+                    to_state == WS_STATE_DISCONNECTED);
+            
+        case WS_STATE_CLOSING:
+            return (to_state == WS_STATE_DISCONNECTED);
+            
+        default:
+            return 0; // Invalid from_state
+    }
+}

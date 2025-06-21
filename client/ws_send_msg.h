@@ -16,9 +16,26 @@ typedef struct {
     int frame_duration;        // Frame duration in ms (e.g., 60)
 } audio_params_t;
 
+// WebSocket client state enumeration
+typedef enum {
+    WS_STATE_DISCONNECTED = 0,  // Initial state, not connected
+    WS_STATE_CONNECTING,        // WebSocket connection in progress
+    WS_STATE_CONNECTED,         // WebSocket connected, waiting for hello exchange
+    WS_STATE_HELLO_SENT,        // Client hello sent, waiting for server hello
+    WS_STATE_AUTHENTICATED,     // Hello exchange complete, ready for operations
+    WS_STATE_LISTENING,         // In listening mode (audio streaming)
+    WS_STATE_SPEAKING,          // Speaking/processing mode
+    WS_STATE_ERROR,             // Error state
+    WS_STATE_CLOSING            // Connection closing
+} websocket_state_t;
+
 // Connection state structure
 typedef struct {
-    // Connection state
+    // Formal state machine
+    websocket_state_t current_state;
+    websocket_state_t previous_state;
+    
+    // Connection state (legacy - kept for compatibility)
     int connected;
     int hello_sent;
     int server_hello_received;
@@ -44,6 +61,13 @@ typedef struct {
     audio_params_t audio_params; // Audio parameters
     // Timeout handling
     time_t hello_sent_time;
+    
+    // Protocol compliance tracking
+    int protocol_version;    // Protocol version from server
+    int features_mcp;        // MCP feature support
+    int features_stt;        // STT feature support
+    int features_tts;        // TTS feature support
+    int features_llm;        // LLM feature support
 } connection_state_t;
 
 /**
@@ -135,4 +159,37 @@ int send_abort_message_with_reason(struct lws *wsi, connection_state_t *conn_sta
  */
 int send_mcp_message(struct lws *wsi, connection_state_t *conn_state, const char *payload);
 
-#endif /* WS_SEND_MSG_H */
+/**
+ * State management functions
+ */
+
+/**
+ * Initialize connection state structure
+ * @param conn_state Connection state to initialize
+ */
+void init_connection_state(connection_state_t *conn_state);
+
+/**
+ * Change WebSocket client state
+ * @param conn_state Connection state
+ * @param new_state New state to transition to
+ * @return 0 on success, -1 if transition is invalid
+ */
+int change_websocket_state(connection_state_t *conn_state, websocket_state_t new_state);
+
+/**
+ * Get current state as string for logging
+ * @param state State enumeration value
+ * @return String representation of state
+ */
+const char* websocket_state_to_string(websocket_state_t state);
+
+/**
+ * Check if state transition is valid
+ * @param from_state Current state
+ * @param to_state Target state
+ * @return 1 if valid, 0 if invalid
+ */
+int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to_state);
+
+#endif // WS_SEND_MSG_H
