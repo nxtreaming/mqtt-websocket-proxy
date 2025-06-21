@@ -2,6 +2,8 @@
 #define WS_SEND_MSG_H
 
 #include <stdio.h>
+#include <stddef.h>
+#include "cjson/cJSON.h"
 #include <stdlib.h>
 #include <libwebsockets.h>
 #include <time.h>
@@ -65,7 +67,7 @@ int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char*
  * @param ... Variable arguments for format string
  * @return 0 on success, -1 on failure
  */
-int send_json_message(struct lws* wsi, connection_state_t* conn_state, const char* format, ...);
+int send_mcp_response(struct lws* wsi, connection_state_t* conn_state, int rpc_id, cJSON* result);
 
 /**
  * Send a binary frame over WebSocket

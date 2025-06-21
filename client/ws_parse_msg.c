@@ -128,9 +128,8 @@ void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
             }
             
             // Send formatted response
-            if (send_json_message(wsi, conn_state, 
-                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{}}}", 
-                conn_state->session_id, id_num) != 0) {
+            cJSON* result = cJSON_CreateObject();
+            if (send_mcp_response(wsi, conn_state, id_num, result) != 0) {
                 fprintf(stderr, "Error: Failed to send MCP response\n");
             }
         } else if (strcmp(method_str, "tools/list") == 0) {
@@ -141,9 +140,10 @@ void handle_mcp_message(struct lws *wsi, cJSON *json_response) {
             }
             
             // Send formatted response
-            if (send_json_message(wsi, conn_state, 
-                "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"tools\":[]}}}", 
-                conn_state->session_id, id_num) != 0) {
+            cJSON* result = cJSON_CreateObject();
+            cJSON* tools_array = cJSON_CreateArray();
+            cJSON_AddItemToObject(result, "tools", tools_array);
+            if (send_mcp_response(wsi, conn_state, id_num, result) != 0) {
                 fprintf(stderr, "Error: Failed to send tools/list response\n");
             }
         } else {

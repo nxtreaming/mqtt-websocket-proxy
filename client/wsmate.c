@@ -75,6 +75,33 @@ static uint64_t get_current_ms(void) {
 #endif
 }
 
+// Message handler function pointer type
+typedef void (*message_handler_func)(struct lws *wsi, cJSON *json_response);
+
+// Wrapper functions for generic handlers
+static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
+    handle_generic_message(wsi, json, "STT");
+}
+
+static void handle_llm_wrapper(struct lws *wsi, cJSON *json) {
+    handle_generic_message(wsi, json, "LLM");
+}
+
+// Message handler table entry structure
+typedef struct {
+    const char* name;
+    message_handler_func handler;
+} message_handler_entry_t;
+
+// Message handler table
+static const message_handler_entry_t message_handler_table[] = {
+    {"hello", handle_hello_message},
+    {"mcp",   handle_mcp_message},
+    {"stt",   handle_stt_wrapper},
+    {"llm",   handle_llm_wrapper},
+    {"tts",   handle_tts_message}
+};
+
 static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
@@ -111,7 +138,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
         }
 
         case LWS_CALLBACK_CLIENT_RECEIVE: {
-            // Get connection state
             connection_state_t* conn_state = (connection_state_t*)lws_wsi_user(wsi);
             if (!conn_state) {
                 fprintf(stderr, "Error: No connection state in RECEIVE\n");
@@ -120,67 +146,43 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
             if (lws_frame_is_binary(wsi)) {
                 fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
-            }
-            else {
-                // Ensure the received data is properly null-terminated for logging
-                char* msg = (char*)in;
-                size_t msg_len = len;
+            } else {
                 char* terminated_msg = NULL;
-
-                // Check if the message is already null-terminated
-                if (msg_len > 0 && msg[msg_len - 1] != '\0') {
-                    // Make a null-terminated copy for safe printing
-                    terminated_msg = (char*)malloc(msg_len + 1);
+                char* msg_to_log = (char*)in;
+                if (len > 0 && ((char*)in)[len - 1] != '\0') {
+                    terminated_msg = (char*)malloc(len + 1);
                     if (terminated_msg) {
-                        memcpy(terminated_msg, msg, msg_len);
-                        terminated_msg[msg_len] = '\0';
-                        msg = terminated_msg;
+                        memcpy(terminated_msg, in, len);
+                        terminated_msg[len] = '\0';
+                        msg_to_log = terminated_msg;
                     }
                 }
-
-                fprintf(stdout, "Received raw TEXT data: %.*s\n", (int)msg_len, msg);
-
-                // Free the temporary buffer if we allocated one
-                if (terminated_msg) {
-                    free(terminated_msg);
-                }
+                fprintf(stdout, "Received raw TEXT data: %.*s\n", (int)len, msg_to_log);
+                if (terminated_msg) free(terminated_msg);
 
                 cJSON* json_response = cJSON_ParseWithLength((const char*)in, len);
                 if (json_response == NULL) {
-                    const char* error_ptr = cJSON_GetErrorPtr();
-                    if (error_ptr != NULL) {
-                        fprintf(stderr, "Error before: %s\n", error_ptr);
-                    }
-                    fprintf(stderr, "Failed to parse JSON response\n");
-                }
-                else {
+                    fprintf(stderr, "Failed to parse JSON response: %s\n", cJSON_GetErrorPtr());
+                } else {
                     fprintf(stdout, "Successfully parsed JSON response.\n");
                     const cJSON* type_item = cJSON_GetObjectItemCaseSensitive(json_response, "type");
 
                     if (cJSON_IsString(type_item) && (type_item->valuestring != NULL)) {
-                        char* msg_type = type_item->valuestring;
+                        const char* msg_type = type_item->valuestring;
                         fprintf(stdout, "  Response type: %s\n", msg_type);
-
-                        if (strcmp(msg_type, "hello") == 0) {
-                            handle_hello_message(wsi, json_response);
+                        
+                        int handled = 0;
+                        for (size_t i = 0; i < sizeof(message_handler_table) / sizeof(message_handler_table[0]); ++i) {
+                            if (strcmp(msg_type, message_handler_table[i].name) == 0) {
+                                message_handler_table[i].handler(wsi, json_response);
+                                handled = 1;
+                                break;
+                            }
                         }
-                        else if (strcmp(msg_type, "mcp") == 0) {
-                            handle_mcp_message(wsi, json_response);
-                        }
-                        else if (strcmp(msg_type, "stt") == 0) {
-                            handle_generic_message(wsi, json_response, "STT");
-                        }
-                        else if (strcmp(msg_type, "llm") == 0) {
-                            handle_generic_message(wsi, json_response, "LLM");
-                        }
-                        else if (strcmp(msg_type, "tts") == 0) {
-                            handle_tts_message(wsi, json_response);
-                        }
-                        else {
+                        if (!handled) {
                             fprintf(stdout, "  Received unknown JSON message type: %s\n", msg_type);
                         }
-                    }
-                    else {
+                    } else {
                         fprintf(stderr, "  JSON response does not have a 'type' string field or type is null.\n");
                     }
                     cJSON_Delete(json_response);
@@ -329,6 +331,40 @@ static const char* extract_command_param(const char* command, const char* cmd_na
     return start;
 }
 
+// Forward declarations for command handlers
+static void handle_help(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_hello(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_abort_reason(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_mcp(struct lws* wsi, connection_state_t* conn_state, const char* command);
+static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command);
+
+// Command handler function pointer type
+typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
+
+// Command table entry structure
+typedef struct {
+    const char* name;
+    command_handler_func handler;
+    int requires_connection;
+} command_entry_t;
+
+// Command table
+static const command_entry_t command_table[] = {
+    {"help",         handle_help,         0},
+    {"hello",        handle_hello,        1},
+    {"listen",       handle_listen,       1},
+    {"detect",       handle_detect,       1},
+    {"chat",         handle_chat,         1},
+    {"abort",        handle_abort,        1},
+    {"abort-reason", handle_abort_reason, 1},
+    {"mcp",          handle_mcp,          1},
+    {"exit",         handle_exit,         0}
+};
+
 static void print_help(void) {
     fprintf(stdout, "\nAvailable commands:\n");
     fprintf(stdout, "  help                 - Show this help message\n");
@@ -344,122 +380,100 @@ static void print_help(void) {
     fprintf(stdout, "\n");
 }
 
+// Command handler implementations
+static void handle_help(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    print_help();
+}
+
+static void handle_hello(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
+        conn_state->hello_sent = 1;
+        fprintf(stdout, "Sent hello message\n");
+    }
+}
+
+static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* param = extract_command_param(command, "listen");
+    if (param && strcmp(param, "start") == 0) {
+        send_start_listening_message(wsi, conn_state);
+    } else if (param && strcmp(param, "stop") == 0) {
+        send_stop_listening_message(wsi, conn_state);
+    } else {
+        fprintf(stderr, "Unknown listen command. Use 'listen start' or 'listen stop'\n");
+    }
+}
+
+static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* text = extract_command_param(command, "detect");
+    if (text && *text) {
+        send_detect_message(wsi, conn_state, text);
+    } else {
+        fprintf(stderr, "Please provide text to detect\n");
+    }
+}
+
+static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* text = extract_command_param(command, "chat");
+    if (text && *text) {
+        send_chat_message(wsi, conn_state, text);
+    } else {
+        fprintf(stderr, "Please provide a message to send\n");
+    }
+}
+
+static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    conn_state->should_send_abort = 1;
+    lws_callback_on_writable(wsi);
+    fprintf(stdout, "Abort message queued\n");
+}
+
+static void handle_abort_reason(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* reason = extract_command_param(command, "abort-reason");
+    if (reason && *reason) {
+        send_abort_message_with_reason(wsi, conn_state, reason);
+    } else {
+        fprintf(stderr, "Please provide a reason for abort\n");
+    }
+}
+
+static void handle_mcp(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* payload = extract_command_param(command, "mcp");
+    if (payload && *payload) {
+        send_mcp_message(wsi, conn_state, payload);
+    } else {
+        fprintf(stderr, "Please provide a JSON-RPC payload\n");
+    }
+}
+
+static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    interrupted = 1;
+    if (conn_state && conn_state->connected && wsi) {
+        lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char*)"User exit", 9);
+    }
+}
+
 static void process_command(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     if (!command || !*command) return;
 
     char cmd[256] = { 0 };
-    char param[1024] = { 0 };
-
-    // Extract the command (first word)
     const char* space = strchr(command, ' ');
-    if (space) {
-        // Command has parameters
-        size_t cmd_len = space - command;
-        if (cmd_len >= sizeof(cmd)) cmd_len = sizeof(cmd) - 1;
-        strncpy(cmd, command, cmd_len);
-        cmd[cmd_len] = '\0';
+    size_t cmd_len = space ? (size_t)(space - command) : strlen(command);
+    if (cmd_len >= sizeof(cmd)) cmd_len = sizeof(cmd) - 1;
+    strncpy(cmd, command, cmd_len);
+    cmd[cmd_len] = '\0';
 
-        // Skip any whitespace after the command
-        const char* param_start = space + 1;
-        while (*param_start == ' ') param_start++;
-
-        // Simple quote handling - just remove the surrounding quotes if present
-        if (*param_start == '"' && param_start[strlen(param_start) - 1] == '"') {
-            // Copy without the quotes
-            size_t content_len = strlen(param_start) - 2;
-            if (content_len >= sizeof(param)) content_len = sizeof(param) - 1;
-            strncpy(param, param_start + 1, content_len);
-            param[content_len] = '\0';
-        }
-        else {
-            // Copy the parameter normally
-            strncpy(param, param_start, sizeof(param) - 1);
-            param[sizeof(param) - 1] = '\0';
-        }
-    }
-    else {
-        // Command without parameters
-        strncpy(cmd, command, sizeof(cmd) - 1);
-        cmd[sizeof(cmd) - 1] = '\0';
-    }
-
-    // Use the parameter directly
-    char* cleaned_param = param;
-
-    if (strcmp(cmd, "help") == 0) {
-        print_help();
-    }
-    else {
-        if (!conn_state->connected) {
-            fprintf(stderr, "Not connected to server\n");
-            return;
-        }
-
-        if (strcmp(cmd, "hello") == 0) {
-            if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
-                conn_state->hello_sent = 1;
-                fprintf(stdout, "Sent hello message\n");
-            }
-        }
-        else if (strcmp(cmd, "listen") == 0) {
-            if (strcmp(param, "start") == 0) {
-                send_start_listening_message(wsi, conn_state);
-            }
-            else if (strcmp(param, "stop") == 0) {
-                send_stop_listening_message(wsi, conn_state);
-            }
-            else {
-                fprintf(stderr, "Unknown listen command. Use 'listen start' or 'listen stop'\n");
-            }
-        }
-        else if (strcmp(cmd, "detect") == 0) {
-            const char* text = extract_command_param(command, "detect");
-            if (text && *text) {
-                send_detect_message(wsi, conn_state, text);
-            } else {
-                fprintf(stderr, "Please provide text to detect\n");
-            }
-        }
-        else if (strcmp(cmd, "chat") == 0) {
-            const char* text = extract_command_param(command, "chat");
-            if (text && *text) {
-                send_chat_message(wsi, conn_state, text);
-            } else {
-                fprintf(stderr, "Please provide a message to send\n");
-            }
-        }
-        else if (strcmp(cmd, "abort") == 0) {
-            conn_state->should_send_abort = 1;
-            lws_callback_on_writable(wsi);
-            fprintf(stdout, "Abort message queued\n");
-        }
-        else if (strcmp(cmd, "abort-reason") == 0) {
-            if (strlen(param) == 0) {
-                fprintf(stderr, "Please provide a reason for abort\n");
+    for (size_t i = 0; i < sizeof(command_table) / sizeof(command_table[0]); ++i) {
+        if (strcmp(cmd, command_table[i].name) == 0) {
+            if (command_table[i].requires_connection && (!conn_state || !conn_state->connected)) {
+                fprintf(stderr, "Not connected to server. Command '%s' requires a connection.\n", cmd);
                 return;
             }
-
-            // Send abort message with reason
-            send_abort_message_with_reason(wsi, conn_state, param);
-        }
-        else if (strcmp(cmd, "mcp") == 0) {
-            const char* payload = extract_command_param(command, "mcp");
-            if (payload && *payload) {
-                send_mcp_message(wsi, conn_state, payload);
-            } else {
-                fprintf(stderr, "Please provide a JSON-RPC payload\n");
-            }
-        }
-        else if (strcmp(cmd, "exit") == 0) {
-            interrupted = 1;
-            if (conn_state->connected && wsi) {
-                lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char*)"User exit", 9);
-            }
-        }
-        else {
-            fprintf(stderr, "Unknown command: %s. Type 'help' for available commands.\n", cmd);
+            command_table[i].handler(wsi, conn_state, command);
+            return;
         }
     }
+
+    fprintf(stderr, "Unknown command: %s. Type 'help' for available commands.\n", cmd);
 }
 
 // Function to handle a single interactive command
