@@ -260,12 +260,12 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 fprintf(stdout, "Successfully sent %s message\n", write_state->write_is_binary ? "binary" : "text");
                 
                 // Update connection state based on what was sent
-                if (!write_state->hello_sent) {
+                if (write_state->current_state == WS_STATE_CONNECTED) {
                     // This was the hello message
-                    write_state->hello_sent = 1;
+                    change_websocket_state(write_state, WS_STATE_HELLO_SENT);
                     write_state->hello_sent_time = time(NULL);
                     fprintf(stdout, "Client hello sent at %ld\n", (long)write_state->hello_sent_time);
-                } else if (write_state->listen_sent && !write_state->write_is_binary) {
+                } else if (write_state->current_state == WS_STATE_LISTENING && !write_state->write_is_binary) {
                     // This was the listen message (not a binary frame)
                     fprintf(stdout, "Listen message sent successfully\n");                    
                 }

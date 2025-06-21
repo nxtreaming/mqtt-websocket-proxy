@@ -174,8 +174,12 @@ int send_chat_message(struct lws *wsi, connection_state_t *conn_state, const cha
 }
 
 int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state) {
-    if (conn_state->listen_sent) {
-        fprintf(stderr, "Error: Start listening message already sent, cannot send again.\n");
+    // Allow sending listen message if we're in authenticated or listening state
+    // This handles cases where server sends duplicate hello messages
+    if (conn_state->current_state != WS_STATE_AUTHENTICATED && 
+        conn_state->current_state != WS_STATE_LISTENING) {
+        fprintf(stderr, "Error: Cannot send listen message in current state: %s\n", 
+               websocket_state_to_string(conn_state->current_state));
         return -1;
     }
 
@@ -200,7 +204,7 @@ int send_start_listening_message(struct lws *wsi, connection_state_t *conn_state
 
     int result = send_json_object(wsi, conn_state, root);
     if (result == 0) {
-        conn_state->listen_sent = 1;
+        fprintf(stdout, "Listen message sent successfully\n");
     }
     return result;
 }
@@ -287,28 +291,6 @@ int change_websocket_state(connection_state_t *conn_state, websocket_state_t new
             websocket_state_to_string(conn_state->previous_state),
             websocket_state_to_string(conn_state->current_state));
     
-    // Update legacy state flags for compatibility
-    switch (new_state) {
-        case WS_STATE_CONNECTED:
-            conn_state->connected = 1;
-            break;
-        case WS_STATE_HELLO_SENT:
-            conn_state->hello_sent = 1;
-            break;
-        case WS_STATE_AUTHENTICATED:
-            conn_state->server_hello_received = 1;
-            break;
-        case WS_STATE_LISTENING:
-            conn_state->listen_sent = 1;
-            break;
-        case WS_STATE_DISCONNECTED:
-        case WS_STATE_CLOSING:
-            conn_state->connected = 0;
-            break;
-        default:
-            break;
-    }
-    
     return 0;
 }
 
@@ -331,7 +313,7 @@ int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to
     // Define valid state transitions based on the WebSocket protocol
     switch (from_state) {
         case WS_STATE_DISCONNECTED:
-            return (to_state == WS_STATE_CONNECTING);
+            return (to_state == WS_STATE_CONNECTING || to_state == WS_STATE_CONNECTED);
             
         case WS_STATE_CONNECTING:
             return (to_state == WS_STATE_CONNECTED || 
