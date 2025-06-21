@@ -299,6 +299,36 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     return 0;
 }
 
+static const char* extract_command_param(const char* command, const char* cmd_name) {
+    const char* param = strstr(command, cmd_name);
+    if (!param) return NULL;
+
+    param += strlen(cmd_name);
+    while (*param && isspace((unsigned char)*param)) {
+        param++;
+    }
+
+    // This static buffer is not thread-safe, but for this single-threaded client it's acceptable.
+    static char buffer[1024];
+    strncpy(buffer, param, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    // Trim trailing whitespace and quotes
+    char* end = buffer + strlen(buffer) - 1;
+    while (end >= buffer && (isspace((unsigned char)*end) || *end == '"')) {
+        *end = '\0';
+        end--;
+    }
+
+    // Trim leading quote
+    char* start = buffer;
+    if (*start == '"') {
+        start++;
+    }
+
+    return start;
+}
+
 static void print_help(void) {
     fprintf(stdout, "\nAvailable commands:\n");
     fprintf(stdout, "  help                 - Show this help message\n");
@@ -383,95 +413,19 @@ static void process_command(struct lws* wsi, connection_state_t* conn_state, con
             }
         }
         else if (strcmp(cmd, "detect") == 0) {
-            // For detect command, extract the text directly from the original command
-            // to preserve UTF-8 encoding
-            const char* detect_text = strstr(command, "detect");
-            if (!detect_text) {
-                fprintf(stderr, "Invalid detect command format\n");
-                return;
-            }
-
-            // Skip "detect" and any whitespace
-            detect_text += 6; // Length of "detect"
-            while (*detect_text && (*detect_text == ' ' || *detect_text == '\t')) {
-                detect_text++;
-            }
-
-            // Remove surrounding quotes if present
-            if (*detect_text == '"') {
-                detect_text++; // Skip opening quote
-
-                // Create a copy without the closing quote
-                char text_copy[1024] = { 0 };
-                strncpy(text_copy, detect_text, sizeof(text_copy) - 1);
-
-                // Find and remove closing quote if present
-                char* closing_quote = strrchr(text_copy, '"');
-                if (closing_quote) {
-                    *closing_quote = '\0';
-                }
-
-                if (strlen(text_copy) == 0) {
-                    fprintf(stderr, "Please provide text to detect\n");
-                    return;
-                }
-
-                send_detect_message(wsi, conn_state, text_copy);
-            }
-            else {
-                // No quotes, use as is
-                if (strlen(detect_text) == 0) {
-                    fprintf(stderr, "Please provide text to detect\n");
-                    return;
-                }
-
-                send_detect_message(wsi, conn_state, detect_text);
+            const char* text = extract_command_param(command, "detect");
+            if (text && *text) {
+                send_detect_message(wsi, conn_state, text);
+            } else {
+                fprintf(stderr, "Please provide text to detect\n");
             }
         }
         else if (strcmp(cmd, "chat") == 0) {
-            // For chat command, extract the text directly from the original command
-            // to preserve UTF-8 encoding
-            const char* chat_text = strstr(command, "chat");
-            if (!chat_text) {
-                fprintf(stderr, "Invalid chat command format\n");
-                return;
-            }
-
-            // Skip "chat" and any whitespace
-            chat_text += 4; // Length of "chat"
-            while (*chat_text && (*chat_text == ' ' || *chat_text == '\t')) {
-                chat_text++;
-            }
-
-            // Remove surrounding quotes if present
-            if (*chat_text == '"') {
-                chat_text++; // Skip opening quote
-
-                // Create a copy without the closing quote
-                char text_copy[1024] = { 0 };
-                strncpy(text_copy, chat_text, sizeof(text_copy) - 1);
-
-                // Find and remove closing quote if present
-                char* closing_quote = strrchr(text_copy, '"');
-                if (closing_quote) {
-                    *closing_quote = '\0';
-                }
-
-                if (strlen(text_copy) == 0) {
-                    fprintf(stderr, "Please provide a message to send\n");
-                    return;
-                }
-
-                send_chat_message(wsi, conn_state, text_copy);
-            }
-            else {
-                // No quotes, use as is
-                if (strlen(chat_text) == 0) {
-                    fprintf(stderr, "Please provide a message to send\n");
-                    return;
-                }
-
-                send_chat_message(wsi, conn_state, chat_text);
+            const char* text = extract_command_param(command, "chat");
+            if (text && *text) {
+                send_chat_message(wsi, conn_state, text);
+            } else {
+                fprintf(stderr, "Please provide a message to send\n");
             }
         }
         else if (strcmp(cmd, "abort") == 0) {
@@ -489,27 +443,12 @@ static void process_command(struct lws* wsi, connection_state_t* conn_state, con
             send_abort_message_with_reason(wsi, conn_state, param);
         }
         else if (strcmp(cmd, "mcp") == 0) {
-            // For MCP command, extract the payload directly from the original command
-            // to preserve JSON structure and UTF-8 encoding
-            const char* mcp_payload = strstr(command, "mcp");
-            if (!mcp_payload) {
-                fprintf(stderr, "Invalid MCP command format\n");
-                return;
-            }
-
-            // Skip "mcp" and any whitespace
-            mcp_payload += 3; // Length of "mcp"
-            while (*mcp_payload && (*mcp_payload == ' ' || *mcp_payload == '\t')) {
-                mcp_payload++;
-            }
-
-            if (strlen(mcp_payload) == 0) {
+            const char* payload = extract_command_param(command, "mcp");
+            if (payload && *payload) {
+                send_mcp_message(wsi, conn_state, payload);
+            } else {
                 fprintf(stderr, "Please provide a JSON-RPC payload\n");
-                return;
             }
-
-            // Send MCP message with payload
-            send_mcp_message(wsi, conn_state, mcp_payload);
         }
         else if (strcmp(cmd, "exit") == 0) {
             interrupted = 1;
