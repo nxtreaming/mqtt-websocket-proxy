@@ -58,6 +58,25 @@ static pthread_t service_thread_id;
 struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
 
+// Helper function to safely close WebSocket connection
+static void close_websocket_connection(struct lws *wsi) {
+    if (wsi) {
+        // If this is the current active connection, clear the global reference
+        if (wsi == g_wsi) {
+            g_wsi = NULL;
+        }
+        
+        // Update connection state if possible
+        connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
+        if (conn_state) {
+            change_websocket_state(conn_state, WS_STATE_DISCONNECTED);
+        }
+        
+        // Close the connection
+        lws_close_reason(wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Closing connection", 16);
+    }
+}
+
 static const char *hello_msg = 
     "{\"type\":\"hello\","
     "\"version\":1,"
@@ -114,17 +133,19 @@ static const message_handler_entry_t message_handler_table[] = {
 
 static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len) {
     switch (reason) {
-        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+        case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
             fprintf(stderr, "CLIENT_CONNECTION_ERROR: %s\n", in ? (char *)in : "(null)");
-            // Try to get connection state and update it to error state
+            // Close the connection and update state
             if (g_wsi) {
                 connection_state_t *error_state = (connection_state_t *)lws_wsi_user(g_wsi);
                 if (error_state) {
                     change_websocket_state(error_state, WS_STATE_ERROR);
                 }
+                close_websocket_connection(g_wsi);
             }
             interrupted = 1;
             break;
+        }
 
         case LWS_CALLBACK_CLIENT_ESTABLISHED: {
             fprintf(stdout, "CLIENT_ESTABLISHED\n");
@@ -136,6 +157,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
             if (!conn_state) {
                 fprintf(stderr, "Error: No connection state available\n");
+                close_websocket_connection(wsi);
                 return -1;
             }
             
@@ -151,6 +173,8 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             } else {
                 fprintf(stderr, "Error: Failed to prepare hello message\n");
                 change_websocket_state(conn_state, WS_STATE_ERROR);
+                close_websocket_connection(wsi);
+                return -1;
             }
                 
             break;
@@ -160,15 +184,32 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t* conn_state = (connection_state_t*)lws_wsi_user(wsi);
             if (!conn_state) {
                 fprintf(stderr, "Error: No connection state in RECEIVE\n");
+                close_websocket_connection(wsi);
+                return -1;
+            }
+
+            // Check if we're still connected
+            if (conn_state->current_state == WS_STATE_DISCONNECTED ||
+                conn_state->current_state == WS_STATE_ERROR) {
+                fprintf(stderr, "Error: Received data in invalid state: %s\n", 
+                       websocket_state_to_string(conn_state->current_state));
+                close_websocket_connection(wsi);
                 return -1;
             }
 
             if (lws_frame_is_binary(wsi)) {
+                // Handle binary data (audio frames)
                 fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
+                
+                // Update last activity time for keep-alive
+                conn_state->last_activity = time(NULL);
             } else {
+                // Handle text data (JSON messages)
                 char* terminated_msg = NULL;
-                char* msg_to_log = (char*)in;
-                if (len > 0 && ((char*)in)[len - 1] != '\0') {
+                const char* msg_to_log = (const char*)in;
+                
+                // Ensure the message is null-terminated for logging
+                if (len > 0 && ((const char*)in)[len - 1] != '\0') {
                     terminated_msg = (char*)malloc(len + 1);
                     if (terminated_msg) {
                         memcpy(terminated_msg, in, len);
@@ -176,20 +217,24 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                         msg_to_log = terminated_msg;
                     }
                 }
+                
+                // Log the raw message
                 fprintf(stdout, "Received raw TEXT data: %.*s\n", (int)len, msg_to_log);
-                if (terminated_msg) free(terminated_msg);
-
+                
+                // Parse the JSON message
                 cJSON* json_response = cJSON_ParseWithLength((const char*)in, len);
                 if (json_response == NULL) {
-                    fprintf(stderr, "Failed to parse JSON response: %s\n", cJSON_GetErrorPtr());
+                    fprintf(stderr, "Failed to parse JSON response: %s\n", 
+                           cJSON_GetErrorPtr() ? cJSON_GetErrorPtr() : "unknown error");
                 } else {
-                    fprintf(stdout, "Successfully parsed JSON response.\n");
+                    // Process the JSON message
                     const cJSON* type_item = cJSON_GetObjectItemCaseSensitive(json_response, "type");
 
                     if (cJSON_IsString(type_item) && (type_item->valuestring != NULL)) {
                         const char* msg_type = type_item->valuestring;
                         fprintf(stdout, "  Response type: %s\n", msg_type);
                         
+                        // Find and call the appropriate handler
                         int handled = 0;
                         for (size_t i = 0; i < sizeof(message_handler_table) / sizeof(message_handler_table[0]); ++i) {
                             if (strcmp(msg_type, message_handler_table[i].name) == 0) {
@@ -198,25 +243,31 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                                 break;
                             }
                         }
+                        
                         if (!handled) {
-                            fprintf(stdout, "  Received unknown JSON message type: %s\n", msg_type);
+                            fprintf(stdout, "  No handler for message type: %s\n", msg_type);
                         }
                     } else {
                         fprintf(stderr, "  JSON response does not have a 'type' string field or type is null.\n");
                     }
+                    
                     cJSON_Delete(json_response);
                 }
+                
+                // Free the temporary buffer if we allocated one
+                if (terminated_msg) {
+                    free(terminated_msg);
+                }
+                
+                // Update last activity time for keep-alive
+                conn_state->last_activity = time(NULL);
             }
             break;
         }
 
         case LWS_CALLBACK_CLIENT_CLOSED: {
             fprintf(stdout, "CLIENT_CLOSED\n");
-            g_wsi = NULL;
-            connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
-            if (closed_state) {
-                change_websocket_state(closed_state, WS_STATE_DISCONNECTED);
-            }
+            close_websocket_connection(wsi);
             interrupted = 1;
             break;
         }
@@ -677,9 +728,6 @@ int main(int argc, char **argv) {
         g_context = NULL;
         return 1;
     }
-    
-    // Initialize the global WebSocket instance for state tracking
-    g_wsi = client_wsi;
 
     // Start service thread for WebSocket handling
 #ifdef _WIN32
@@ -722,6 +770,13 @@ int main(int argc, char **argv) {
     // Signal the service thread to stop and wait for it
     if (g_context) {
         lwsl_user("Shutting down WebSocket service...\n");
+        
+        // Close any active WebSocket connection
+        if (g_wsi) {
+            close_websocket_connection(g_wsi);
+            g_wsi = NULL;  // Ensure we don't double-free
+        }
+        
         // Wake up lws_service in the other thread
         lws_cancel_service(g_context);
         
@@ -729,28 +784,42 @@ int main(int argc, char **argv) {
         interrupted = 1;
     }
 
+    // Wait for service thread to exit
 #ifdef _WIN32
     if (service_thread_handle) {
         lwsl_user("Waiting for service thread to join (Windows)...\n");
-        WaitForSingleObject(service_thread_handle, INFINITE);
-        CloseHandle(service_thread_handle);
+        DWORD wait_result = WaitForSingleObject(service_thread_handle, 5000);  // Wait up to 5 seconds
+        if (wait_result == WAIT_OBJECT_0) {
+            CloseHandle(service_thread_handle);
+            lwsl_user("Service thread joined (Windows).\n");
+        } else {
+            lwsl_err("Service thread did not exit in time\n");
+            // Force terminate the thread if it's stuck
+            TerminateThread(service_thread_handle, 1);
+            CloseHandle(service_thread_handle);
+        }
         service_thread_handle = NULL;
-        lwsl_user("Service thread joined (Windows).\n");
     }
 #else
-    if (g_context && service_thread_id != 0) {
+    if (service_thread_id) {
         lwsl_user("Waiting for service thread to join (POSIX)...\n");
         void* res;
-        pthread_join(service_thread_id, &res);
-        // service_thread_id = 0; // Mark as joined, optional for pthreads
+        int join_result = pthread_tryjoin_np(service_thread_id, &res);
+        if (join_result != 0) {
+            lwsl_warn("Service thread did not exit cleanly, canceling...\n");
+            pthread_cancel(service_thread_id);
+            pthread_join(service_thread_id, &res);
+        }
+        service_thread_id = 0;
         lwsl_user("Service thread joined (POSIX).\n");
     }
 #endif
 
+    // Clean up libwebsockets context
     if (g_context) {
         lws_context_destroy(g_context);
         g_context = NULL;
-        fprintf(stdout, "lws_context_destroyed\n");
+        lwsl_user("WebSocket context destroyed.\n");
     }
 
     fprintf(stdout, "wsmate finished.\n");

@@ -42,6 +42,7 @@ typedef struct {
     int listen_sent;
     int listen_stopped;
     time_t listen_sent_time;
+    time_t last_activity;       // Timestamp of last activity (for keep-alive)
     
     // Message state
     int pending_write;
