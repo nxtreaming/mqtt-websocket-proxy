@@ -10,7 +10,6 @@
 // External reference to global context for immediate service wakeup
 extern struct lws_context *g_context;
 
-// Helper function to create a base JSON message with session_id and type.
 static cJSON* create_base_message(connection_state_t* conn_state, const char* type) {
     if (!conn_state || strlen(conn_state->session_id) == 0) {
         fprintf(stderr, "Error: Cannot create message, session_id is missing.\n");
@@ -28,7 +27,6 @@ static cJSON* create_base_message(connection_state_t* conn_state, const char* ty
     return root;
 }
 
-// Helper function to send a cJSON object and handle cleanup.
 static int send_json_object(struct lws* wsi, connection_state_t* conn_state, cJSON* root) {
     if (!wsi || !conn_state || !root) {
         fprintf(stderr, "Error: Invalid parameters for send_json_object\n");
@@ -93,7 +91,7 @@ int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
 int send_mcp_response(struct lws* wsi, connection_state_t* conn_state, int rpc_id, cJSON* result) {
     cJSON *root = create_base_message(conn_state, "mcp");
     if (!root) {
-        cJSON_Delete(result); // Cleanup result object on failure
+        cJSON_Delete(result);
         return -1;
     }
 

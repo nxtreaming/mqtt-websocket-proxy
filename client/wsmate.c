@@ -36,15 +36,20 @@
 #define DEVICE_ID "b8:f8:62:fc:eb:68"
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
-// Command handler function pointer type
 typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
-
 // Command table entry structure
 typedef struct {
     const char* name;
     command_handler_func handler;
     int requires_connection;
 } command_entry_t;
+
+typedef void (*message_handler_func)(struct lws* wsi, cJSON* json_response);
+// Message handler table entry structure
+typedef struct {
+    const char* name;
+    message_handler_func handler;
+} message_handler_entry_t;
 
 static int interrupted = 0;
 
@@ -104,10 +109,6 @@ static uint64_t get_current_ms(void) {
 #endif
 }
 
-// Message handler function pointer type
-typedef void (*message_handler_func)(struct lws *wsi, cJSON *json_response);
-
-// Wrapper functions for generic handlers
 static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "STT");
 }
@@ -115,12 +116,6 @@ static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
 static void handle_llm_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "LLM");
 }
-
-// Message handler table entry structure
-typedef struct {
-    const char* name;
-    message_handler_func handler;
-} message_handler_entry_t;
 
 // Message handler table
 static const message_handler_entry_t message_handler_table[] = {
@@ -176,7 +171,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 close_websocket_connection(wsi);
                 return -1;
             }
-                
+
             break;
         }
 
@@ -218,7 +213,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     }
                 }
                 
-                // Log the raw message
                 fprintf(stdout, "Received raw TEXT data: %.*s\n", (int)len, msg_to_log);
                 
                 // Parse the JSON message
@@ -332,7 +326,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 }
             } 
             else if (write_state->should_send_abort) {
-                // Send abort message
                 const char *abort_msg = "{\"type\":\"abort\"}";
                 int result = send_ws_message(wsi, write_state, abort_msg, strlen(abort_msg), 0);
                 if (result == 0) {
@@ -343,7 +336,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 } else {
                     fprintf(stderr, "Failed to send abort message\n");
                 }
-                write_state->should_send_abort = 0;  // Reset the flag
+                write_state->should_send_abort = 0;
             }
             break;
         }
@@ -417,7 +410,6 @@ static void print_help(void) {
     fprintf(stdout, "\n");
 }
 
-// Command handler implementations
 static void handle_help(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     print_help();
 }
@@ -598,7 +590,6 @@ static void process_command(struct lws* wsi, connection_state_t* conn_state, con
     fprintf(stderr, "Unknown command: %s. Type 'help' for available commands.\n", cmd);
 }
 
-// Function to handle a single interactive command
 static void handle_interactive_mode() {
     static int first_run = 1;
     char input[1024] = {0};
