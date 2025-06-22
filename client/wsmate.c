@@ -51,10 +51,21 @@ typedef struct {
     message_handler_func handler;
 } message_handler_entry_t;
 
-static int interrupted = 0;
 // Global context and WebSocket instance
 struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
+static int interrupted = 0;
+
+static const char *g_hello_msg = 
+    "{\"type\":\"hello\","
+    "\"version\":1,"
+    "\"features\":{\"mcp\":true,\"llm\":true,\"stt\":true,\"tts\":true},"
+    "\"transport\":\"websocket\","
+    "\"audio_params\":{"
+        "\"format\":\"opus\","
+        "\"sample_rate\":16000,"
+        "\"channels\":1,"
+        "\"frame_duration\":60}}";
 
 // Helper function to safely close WebSocket connection
 static void close_websocket_connection(struct lws *wsi) {
@@ -74,17 +85,6 @@ static void close_websocket_connection(struct lws *wsi) {
         lws_close_reason(wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Closing connection", 16);
     }
 }
-
-static const char *hello_msg = 
-    "{\"type\":\"hello\","
-    "\"version\":1,"
-    "\"features\":{\"mcp\":true,\"llm\":true,\"stt\":true,\"tts\":true},"
-    "\"transport\":\"websocket\","
-    "\"audio_params\":{"
-        "\"format\":\"opus\","
-        "\"sample_rate\":16000,"
-        "\"channels\":1,"
-        "\"frame_duration\":60}}";
 
 static void sigint_handler(int sig) {
     (void)sig;
@@ -154,7 +154,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             change_websocket_state(conn_state, WS_STATE_CONNECTED);
             
             // Send hello message
-            if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
+            if (send_ws_message(wsi, conn_state, g_hello_msg, strlen(g_hello_msg), 0) == 0) {
                 change_websocket_state(conn_state, WS_STATE_HELLO_SENT);
                 conn_state->hello_sent_time = time(NULL);
                 fprintf(stdout, "Client hello message prepared\n");
@@ -408,7 +408,7 @@ static void handle_help(struct lws* wsi, connection_state_t* conn_state, const c
 }
 
 static void handle_hello(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    if (send_ws_message(wsi, conn_state, hello_msg, strlen(hello_msg), 0) == 0) {
+    if (send_ws_message(wsi, conn_state, g_hello_msg, strlen(g_hello_msg), 0) == 0) {
         change_websocket_state(conn_state, WS_STATE_HELLO_SENT);
         conn_state->hello_sent_time = time(NULL);
         fprintf(stdout, "Sent hello message\n");
