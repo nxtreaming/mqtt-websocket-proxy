@@ -71,6 +71,9 @@ typedef struct {
     int features_llm;        // LLM feature support
 } connection_state_t;
 
+// External reference to global context for immediate service wakeup
+extern struct lws_context* g_context;
+
 /**
  * Send a WebSocket message (text or binary)
  * 

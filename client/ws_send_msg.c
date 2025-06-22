@@ -7,9 +7,6 @@
 #include "cjson/cJSON.h"
 #include "ws_send_msg.h"
 
-// External reference to global context for immediate service wakeup
-extern struct lws_context *g_context;
-
 static cJSON* create_base_message(connection_state_t* conn_state, const char* type) {
     if (!conn_state || strlen(conn_state->session_id) == 0) {
         fprintf(stderr, "Error: Cannot create message, session_id is missing.\n");

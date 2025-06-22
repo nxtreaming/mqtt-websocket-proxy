@@ -53,6 +53,7 @@ typedef struct {
 
 // Global context and WebSocket instance
 struct lws_context *g_context = NULL;
+
 static struct lws *g_wsi = NULL;
 static int interrupted = 0;
 
@@ -67,7 +68,6 @@ static const char *g_hello_msg =
         "\"channels\":1,"
         "\"frame_duration\":60}}";
 
-// Helper function to safely close WebSocket connection
 static void close_websocket_connection(struct lws *wsi) {
     if (wsi) {
         // If this is the current active connection, clear the global reference
@@ -110,7 +110,6 @@ static void handle_llm_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "LLM");
 }
 
-// Message handler table
 static const message_handler_entry_t message_handler_table[] = {
     {"hello", handle_hello_message},
     {"mcp",   handle_mcp_message},
@@ -543,7 +542,6 @@ static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const c
     }
 }
 
-// Command table
 static const command_entry_t command_table[] = {
     {"help",         handle_help,         0},
     {"hello",        handle_hello,        1},
