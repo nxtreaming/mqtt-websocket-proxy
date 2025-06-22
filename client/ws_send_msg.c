@@ -7,6 +7,9 @@
 #include "cjson/cJSON.h"
 #include "ws_send_msg.h"
 
+// External reference to global context for immediate service wakeup
+extern struct lws_context *g_context;
+
 // Helper function to create a base JSON message with session_id and type.
 static cJSON* create_base_message(connection_state_t* conn_state, const char* type) {
     if (!conn_state || strlen(conn_state->session_id) == 0) {
@@ -78,6 +81,11 @@ int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
     }
 
     lws_callback_on_writable(wsi);
+    
+    // Immediately wake up the service thread to process the pending write
+    if (g_context) {
+        lws_cancel_service(g_context);
+    }
 
     return 0;
 }

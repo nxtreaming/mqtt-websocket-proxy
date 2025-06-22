@@ -55,7 +55,7 @@ static pthread_t service_thread_id;
 #endif
 
 // Global context and WebSocket instance
-static struct lws_context *g_context = NULL;
+struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
 
 static const char *hello_msg = 
@@ -596,7 +596,6 @@ static void *service_thread_func(void *arg)
     
     // Main WebSocket service loop
     while (!interrupted && context) {
-        // Process WebSocket events with a 50ms timeout
         int result = lws_service(context, 50);        
         if (result < 0) {
             lwsl_err("lws_service returned error: %d\n", result);
