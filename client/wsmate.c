@@ -36,6 +36,16 @@
 #define DEVICE_ID "b8:f8:62:fc:eb:68"
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
+// Command handler function pointer type
+typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
+
+// Command table entry structure
+typedef struct {
+    const char* name;
+    command_handler_func handler;
+    int requires_connection;
+} command_entry_t;
+
 static int interrupted = 0;
 
 #ifdef _WIN32
@@ -340,42 +350,6 @@ static const char* extract_command_param(const char* command, const char* cmd_na
     return start;
 }
 
-// Forward declarations for command handlers
-static void handle_help(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_hello(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_abort_reason(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_mcp(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command);
-static void handle_status(struct lws* wsi, connection_state_t* conn_state, const char* command);
-
-// Command handler function pointer type
-typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
-
-// Command table entry structure
-typedef struct {
-    const char* name;
-    command_handler_func handler;
-    int requires_connection;
-} command_entry_t;
-
-// Command table
-static const command_entry_t command_table[] = {
-    {"help",         handle_help,         0},
-    {"hello",        handle_hello,        1},
-    {"listen",       handle_listen,       1},
-    {"detect",       handle_detect,       1},
-    {"chat",         handle_chat,         1},
-    {"abort",        handle_abort,        1},
-    {"abort-reason", handle_abort_reason, 1},
-    {"mcp",          handle_mcp,          1},
-    {"status",       handle_status,       1},
-    {"exit",         handle_exit,         0}
-};
-
 static void print_help(void) {
     fprintf(stdout, "\nAvailable commands:\n");
     fprintf(stdout, "  help                 - Show this help message\n");
@@ -533,6 +507,20 @@ static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const c
     }
 }
 
+// Command table
+static const command_entry_t command_table[] = {
+    {"help",         handle_help,         0},
+    {"hello",        handle_hello,        1},
+    {"listen",       handle_listen,       1},
+    {"detect",       handle_detect,       1},
+    {"chat",         handle_chat,         1},
+    {"abort",        handle_abort,        1},
+    {"abort-reason", handle_abort_reason, 1},
+    {"mcp",          handle_mcp,          1},
+    {"status",       handle_status,       1},
+    {"exit",         handle_exit,         0}
+};
+
 static void process_command(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     if (!command || !*command) return;
 
@@ -545,8 +533,8 @@ static void process_command(struct lws* wsi, connection_state_t* conn_state, con
 
     for (size_t i = 0; i < sizeof(command_table) / sizeof(command_table[0]); ++i) {
         if (strcmp(cmd, command_table[i].name) == 0) {
-            if (command_table[i].requires_connection && (!conn_state || 
-                conn_state->current_state == WS_STATE_DISCONNECTED || 
+            if (command_table[i].requires_connection && (!conn_state ||
+                conn_state->current_state == WS_STATE_DISCONNECTED ||
                 conn_state->current_state == WS_STATE_ERROR)) {
                 fprintf(stderr, "Not connected to server. Command '%s' requires a connection.\n", cmd);
                 return;
@@ -711,8 +699,6 @@ int main(int argc, char **argv) {
     pthread_detach(service_thread_id);
 #endif
 
-    // Main loop for the program. This loop only handles user input.
-    // All WebSocket I/O is handled by the lws service thread.
     while (!interrupted) {
         // Check for hello timeout (10 seconds)
         if (g_wsi) {
@@ -730,13 +716,6 @@ int main(int argc, char **argv) {
         
         // Process user input from the console
         handle_interactive_mode();
-
-        // A short sleep to prevent this loop from consuming 100% CPU.
-#ifdef _WIN32
-        Sleep(50); // 50 ms
-#else
-        usleep(50000); // 50 ms
-#endif
     }
 
     fprintf(stdout, "Exiting main loop. Cleaning up...\n");
