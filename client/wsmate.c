@@ -52,13 +52,6 @@ typedef struct {
 } message_handler_entry_t;
 
 static int interrupted = 0;
-
-#ifdef _WIN32
-static HANDLE service_thread_handle = NULL;
-#else
-static pthread_t service_thread_id;
-#endif
-
 // Global context and WebSocket instance
 struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
@@ -722,13 +715,14 @@ int main(int argc, char **argv) {
 
     // Start service thread for WebSocket handling
 #ifdef _WIN32
-    service_thread_handle = CreateThread(NULL, 0, service_thread_func, (LPVOID)g_context, 0, NULL);
+    HANDLE service_thread_handle = CreateThread(NULL, 0, service_thread_func, (LPVOID)g_context, 0, NULL);
     if (!service_thread_handle) {
         fprintf(stderr, "Error creating service thread\n");
         lws_context_destroy(g_context);
         return 1;
     }
 #else
+    pthread_t serice_thread_id;
     if (pthread_create(&service_thread_id, NULL, service_thread_func, (void *)g_context) != 0) {
         fprintf(stderr, "Error creating service thread\n");
         lws_context_destroy(g_context);
