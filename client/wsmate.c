@@ -10,6 +10,7 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <wchar.h>
 #include <io.h>
 #include <fcntl.h>
 #else
@@ -67,6 +68,57 @@ static const char *g_hello_msg =
         "\"sample_rate\":16000,"
         "\"channels\":1,"
         "\"frame_duration\":60}}";
+
+// Function to initialize console encoding
+static void init_console_encoding(void) {
+#ifdef _WIN32
+    // Set console to UTF-8 mode for both input and output
+    SetConsoleCP(CP_UTF8);
+    SetConsoleOutputCP(CP_UTF8);
+    
+    // Get console handles
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    
+    // Set output mode to handle UTF-8 and virtual terminal processing
+    DWORD outMode = 0;
+    if (GetConsoleMode(hOut, &outMode)) {
+        outMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        SetConsoleMode(hOut, outMode);
+    }
+    
+    // Set input mode to handle UTF-8
+    DWORD inMode = 0;
+    if (GetConsoleMode(hIn, &inMode)) {
+        inMode |= ENABLE_EXTENDED_FLAGS;
+        inMode &= ~(ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE);
+        SetConsoleMode(hIn, inMode);
+    }
+    
+    // Set console font to support Chinese characters
+    CONSOLE_FONT_INFOEX fontInfo;
+    fontInfo.cbSize = sizeof(fontInfo);
+    if (GetCurrentConsoleFontEx(hOut, FALSE, &fontInfo)) {
+        // Try different fonts that support Chinese characters
+        const wchar_t* fonts[] = {
+            L"NSimSun", L"SimSun-ExtB", L"SimSun", 
+            L"MingLiU", L"PMingLiU", L"Microsoft YaHei",
+            L"SimHei", L"FangSong", L"KaiTi", L"Microsoft JhengHei"
+        };
+        
+        for (int i = 0; i < sizeof(fonts)/sizeof(fonts[0]); i++) {
+            wcscpy_s(fontInfo.FaceName, LF_FACESIZE, fonts[i]);
+            if (SetCurrentConsoleFontEx(hOut, FALSE, &fontInfo)) {
+                printf("Console font set to: %ls\n", fonts[i]);
+                break;
+            }
+        }
+    }
+    
+    // Set console title to indicate UTF-8 mode
+    SetConsoleTitleW(L"WebSocket Client (UTF-8 Mode)");    
+#endif
+}
 
 static void close_websocket_connection(struct lws *wsi) {
     if (wsi) {
@@ -186,7 +238,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
             if (lws_frame_is_binary(wsi)) {
                 // Handle binary data (audio frames)
-                fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
+                fprintf(stdout, "Received binary audio data: %zu bytes\n", len);
                 
                 // Update last activity time for keep-alive
                 conn_state->last_activity = time(NULL);
@@ -366,8 +418,33 @@ static const char* extract_command_param(const char* command, const char* cmd_na
     }
 
     // This static buffer is not thread-safe, but for this single-threaded client it's acceptable.
-    static char buffer[1024];
+    static char buffer[4096];
+    memset(buffer, 0, sizeof(buffer));
+    
+    // On Windows, we need to handle the input encoding
+#ifdef _WIN32
+    // First try to interpret as UTF-8 directly
+    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, param, -1, NULL, 0);
+    if (wlen > 0) {
+        // Input is valid UTF-8, copy it directly
+        strncpy(buffer, param, sizeof(buffer) - 1);
+    } else {
+        // If not valid UTF-8, try to convert from console code page to UTF-8
+        wlen = MultiByteToWideChar(CP_OEMCP, 0, param, -1, NULL, 0);
+        if (wlen > 0) {
+            wchar_t* wbuf = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+            if (wbuf) {
+                MultiByteToWideChar(CP_OEMCP, 0, param, -1, wbuf, wlen);
+                // Convert to UTF-8
+                WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buffer, sizeof(buffer) - 1, NULL, NULL);
+                free(wbuf);
+            }
+        }
+    }
+#else
+    // On non-Windows, just copy the string
     strncpy(buffer, param, sizeof(buffer) - 1);
+#endif
     buffer[sizeof(buffer) - 1] = '\0';
 
     // Trim trailing whitespace and quotes
@@ -556,8 +633,19 @@ static const command_entry_t command_table[] = {
 };
 
 static void process_command(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    if (!command || !*command) return;
+    if (!command || !*command) {
+        return;
+    }
 
+    // Skip leading whitespace
+    while (*command && isspace((unsigned char)*command)) {
+        command++;
+    }
+
+    if (!*command) {
+        return;  // Empty command after trimming
+    }
+    
     char cmd[256] = { 0 };
     const char* space = strchr(command, ' ');
     size_t cmd_len = space ? (size_t)(space - command) : strlen(command);
@@ -669,6 +757,10 @@ int main(int argc, char **argv) {
         
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
+
+    // Initialize console encoding first
+    init_console_encoding();
+
     struct lws_context_creation_info info;
     struct lws_client_connect_info conn_info;
 
