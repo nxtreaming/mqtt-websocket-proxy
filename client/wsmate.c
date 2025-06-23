@@ -60,6 +60,9 @@ struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
 static int interrupted = 0;
 
+//
+// ffmpeg -i .\opus_input.ogg -ac 1 -ar 16000 -c:a libopus -b:a 16K  -vbr:a off -application voip -frame_duration 40  cbr.ogg
+//
 static const char *g_hello_msg = 
     "{\"type\":\"hello\","
     "\"version\":1,"
