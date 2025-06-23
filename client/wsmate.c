@@ -10,6 +10,7 @@
 
 #include "ws_send_msg.h"
 #include "ws_parse_msg.h"
+#include "ws_audio_utils.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -19,6 +20,9 @@
 #include <pthread.h>
 #include <unistd.h>
 #endif
+
+#include <stdint.h>
+#include <ctype.h>
 
 #ifndef LWS_CLOSE_STATUS_GOING_AWAY
 #define LWS_CLOSE_STATUS_GOING_AWAY 1001
@@ -65,7 +69,7 @@ static const char *g_hello_msg =
         "\"format\":\"opus\","
         "\"sample_rate\":16000,"
         "\"channels\":1,"
-        "\"frame_duration\":60}}";
+        "\"frame_duration\":40}}";
 
 static void close_websocket_connection(struct lws *wsi) {
     if (wsi) {
@@ -177,6 +181,27 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             if (lws_frame_is_binary(wsi)) {
                 // Handle binary data (audio frames)
                 fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
+                
+                // Try to play the received audio data as MP3
+                if (len > 0) {
+                    // Initialize audio system if not already done
+                    static int audio_init_attempted = 0;
+                    if (!audio_init_attempted) {
+                        if (ws_audio_init() == 0) {
+                            fprintf(stdout, "Audio system initialized for MP3 playback\n");
+                        } else {
+                            fprintf(stderr, "Failed to initialize audio system\n");
+                        }
+                        audio_init_attempted = 1;
+                    }
+                    
+                    // Play the received MP3 data
+                    if (ws_audio_play_mp3(in, len) == 0) {
+                        fprintf(stdout, "Playing received MP3 audio (%zu bytes)\n", len);
+                    } else {
+                        fprintf(stderr, "Failed to play received MP3 audio\n");
+                    }
+                }
                 
                 // Update last activity time for keep-alive
                 conn_state->last_activity = time(NULL);
@@ -384,6 +409,7 @@ static void print_help(void) {
     fprintf(stdout, "  listen stop         - Stop listening\n");
     fprintf(stdout, "  detect <text>       - Send detect message with text\n");
     fprintf(stdout, "  chat <message>      - Send a chat message\n");
+    fprintf(stdout, "  opus <filepath>     - Send Opus audio file to server\n");
     fprintf(stdout, "  abort               - Send abort message and close connection\n");
     fprintf(stdout, "  abort-reason <reason> - Send abort message with reason\n");
     fprintf(stdout, "  mcp <payload>       - Send MCP message with JSON-RPC payload\n");
@@ -524,6 +550,105 @@ static void handle_status(struct lws* wsi, connection_state_t* conn_state, const
     fprintf(stdout, "========================\n");
 }
 
+static int detect_opus_frame_duration(const unsigned char* opus_data, size_t data_len) {
+    if (data_len < 1) return 40; // Default to 40ms
+    
+    unsigned char toc = opus_data[0];
+    int config = (toc >> 3) & 0x1F;
+    
+    // Frame duration lookup table based on config
+    const char* durations[] = {"10ms", "20ms", "40ms", "60ms"};
+    int duration_values[] = {10, 20, 40, 60};
+    
+    int frame_idx = config % 4;
+    
+    if (config >= 20 && config <= 31) {
+        // CELT modes have different durations
+        const int celt_durations[] = {3, 5, 10, 20}; // 2.5ms rounded to 3ms
+        return celt_durations[frame_idx];
+    } else {
+        // SILK and Hybrid modes
+        return duration_values[frame_idx];
+    }
+}
+
+static void handle_opus_send(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    const char* filename = extract_command_param(command, "opus");
+    if (!filename || !*filename) {
+        fprintf(stderr, "Please provide an Opus file path\n");
+        return;
+    }
+    
+    if (conn_state->current_state != WS_STATE_LISTENING) {
+        fprintf(stderr, "Cannot send Opus audio in current state: %s\n", 
+               websocket_state_to_string(conn_state->current_state));
+        return;
+    }
+    
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        fprintf(stderr, "Failed to open Opus file: %s\n", filename);
+        return;
+    }
+    
+    fprintf(stdout, "Reading Opus file: %s\n", filename);
+    
+    uint32_t frame_length;
+    unsigned char opus_buffer[4096];
+    int frames_sent = 0;
+    int frame_duration_ms = 40; // Default
+    int duration_detected = 0;
+    
+    // Read Opus frames from file and send them
+    while (fread(&frame_length, sizeof(uint32_t), 1, file) == 1) {
+        // Convert from little endian if needed
+        #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        frame_length = ((frame_length & 0xFF) << 24) | 
+                      (((frame_length >> 8) & 0xFF) << 16) | 
+                      (((frame_length >> 16) & 0xFF) << 8) | 
+                      ((frame_length >> 24) & 0xFF);
+        #endif
+        
+        if (frame_length == 0 || frame_length > sizeof(opus_buffer)) {
+            fprintf(stderr, "Invalid Opus frame length: %u\n", frame_length);
+            break;
+        }
+        
+        // Read the Opus frame data
+        if (fread(opus_buffer, 1, frame_length, file) != frame_length) {
+            fprintf(stderr, "Failed to read complete Opus frame\n");
+            break;
+        }
+        
+        // Detect frame duration from first frame
+        if (!duration_detected && frame_length > 0) {
+            frame_duration_ms = detect_opus_frame_duration(opus_buffer, frame_length);
+            duration_detected = 1;
+            fprintf(stdout, "Detected Opus frame duration: %dms\n", frame_duration_ms);
+        }
+        
+        // Send the Opus frame via WebSocket binary message
+        if (send_ws_message(wsi, conn_state, (const char*)opus_buffer, frame_length, 1) != 0) {
+            fprintf(stderr, "Failed to send Opus frame\n");
+            break;
+        }
+        
+        frames_sent++;
+        fprintf(stdout, "Sent Opus frame %d (%u bytes)\n", frames_sent, frame_length);
+        
+        // Delay based on detected frame duration
+        #ifdef _WIN32
+        Sleep(frame_duration_ms);
+        #else
+        usleep(frame_duration_ms * 1000);
+        #endif
+    }
+    
+    fclose(file);
+    fprintf(stdout, "Finished sending %d Opus frames from %s (frame duration: %dms)\n", 
+            frames_sent, filename, frame_duration_ms);
+}
+
 static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     interrupted = 1;
     if (conn_state && wsi) {
@@ -538,6 +663,7 @@ static const command_entry_t command_table[] = {
     {"listen",       handle_listen,       1},
     {"detect",       handle_detect,       1},
     {"chat",         handle_chat,         1},
+    {"opus",         handle_opus_send,    1},
     {"abort",        handle_abort,        1},
     {"abort-reason", handle_abort_reason, 1},
     {"mcp",          handle_mcp,          1},

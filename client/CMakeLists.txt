@@ -11,10 +11,19 @@ add_subdirectory(cjson)
 # Assuming libwebsockets headers are accessible via the main project's include paths
 # or that the 'websockets' target handles its own include directories.
 
-add_executable(wsmate wsmate.c ws_send_msg.c ws_parse_msg.c)
+add_executable(wsmate wsmate.c ws_send_msg.c ws_parse_msg.c ws_audio_utils.c)
 
 # Include directory for cJSON.h (from the cjson subdirectory)
 target_include_directories(wsmate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/cjson)
+
+# Add include directories for mpg123 and libao
+target_include_directories(wsmate PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/mpg123
+    ${CMAKE_CURRENT_SOURCE_DIR}/ao
+)
+
+# Add library directories for mpg123 and libao
+target_link_directories(wsmate PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libs)
 
 # Link against the libwebsockets library target from the main project
 # This assumes 'websockets' is a target defined in the parent CMake project
@@ -29,6 +38,9 @@ else()
     #     target_link_libraries(wsmate PRIVATE Libwebsockets::Libwebsockets)
     # endif()
 endif()
+
+# Link mpg123 and libao libraries
+target_link_libraries(wsmate PRIVATE libmpg123-0 libao)
 
 # On Windows, libwebsockets might require ws2_32 and other libraries
 if(WIN32)
