@@ -10,7 +10,6 @@
 
 #ifdef _WIN32
 #include <Windows.h>
-#include <wchar.h>
 #include <io.h>
 #include <fcntl.h>
 #else
@@ -68,54 +67,6 @@ static const char *g_hello_msg =
         "\"sample_rate\":16000,"
         "\"channels\":1,"
         "\"frame_duration\":60}}";
-
-// Function to initialize console encoding
-static void init_console_encoding(void) {
-#ifdef _WIN32
-    // Save current console code pages for restoration if needed
-    UINT old_input_cp = GetConsoleCP();
-    UINT old_output_cp = GetConsoleOutputCP();
-    
-    // First, set console to use UTF-8
-    if (!SetConsoleCP(CP_UTF8)) {
-        fprintf(stderr, "Warning: Failed to set console input CP to UTF-8. Error: %lu\n", GetLastError());
-    }
-    
-    if (!SetConsoleOutputCP(CP_UTF8)) {
-        fprintf(stderr, "Warning: Failed to set console output CP to UTF-8. Error: %lu\n", GetLastError());
-    }
-    
-    // Get console handles
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-    
-    // Set output mode to handle UTF-8 and virtual terminal processing
-    DWORD outMode = 0;
-    if (GetConsoleMode(hOut, &outMode)) {
-        outMode |= ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-        SetConsoleMode(hOut, outMode);
-    }
-    
-    // Set input mode
-    DWORD inMode = 0;
-    if (GetConsoleMode(hIn, &inMode)) {
-        inMode |= ENABLE_EXTENDED_FLAGS;
-        inMode &= ~(ENABLE_QUICK_EDIT_MODE | ENABLE_INSERT_MODE);
-        SetConsoleMode(hIn, inMode);
-    }
-    
-    // Set console title to indicate UTF-8 mode
-    SetConsoleTitleW(L"WebSocket Client (UTF-8 Mode)");
-    
-    // Print current console information
-    printf("Console initialized. Input CP: %u, Output CP: %u\n", 
-           GetConsoleCP(), GetConsoleOutputCP());
-    
-    // Test output
-    printf("Test output - English: Hello, World!\n");
-    printf("Test output - Chinese: 你好，世界！\n");
-#endif
-}
 
 static void close_websocket_connection(struct lws *wsi) {
     if (wsi) {
@@ -235,7 +186,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
             if (lws_frame_is_binary(wsi)) {
                 // Handle binary data (audio frames)
-                fprintf(stdout, "Received binary audio data: %zu bytes\n", len);
+                fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
                 
                 // Update last activity time for keep-alive
                 conn_state->last_activity = time(NULL);
@@ -414,34 +365,25 @@ static const char* extract_command_param(const char* command, const char* cmd_na
         param++;
     }
 
-    static char buffer[4096];
-    memset(buffer, 0, sizeof(buffer));
-    
-    // Skip leading quote if present
-    if (*param == '"') {
-        param++;
-    }
-    
-    // Simple copy of the parameter
-    char* dest = buffer;
-    while (*param && *param != '"') {
-        *dest++ = *param++;
-    }
-    *dest = '\0';
-    
-    // Trim trailing whitespace
+    // This static buffer is not thread-safe, but for this single-threaded client it's acceptable.
+    static char buffer[1024];
+    strncpy(buffer, param, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    // Trim trailing whitespace and quotes
     char* end = buffer + strlen(buffer) - 1;
-    while (end >= buffer && isspace((unsigned char)*end)) {
+    while (end >= buffer && (isspace((unsigned char)*end) || *end == '"')) {
         *end = '\0';
         end--;
     }
-    
-    // If we have an empty string after trimming, return NULL
-    if (buffer[0] == '\0') {
-        return NULL;
+
+    // Trim leading quote
+    char* start = buffer;
+    if (*start == '"') {
+        start++;
     }
-    
-    return buffer;
+
+    return start;
 }
 
 static void print_help(void) {
@@ -515,36 +457,13 @@ static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const
 }
 
 static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    printf("Processing chat command: %s\n", command);
-    
-    // Debug: Print raw bytes of the command
-    printf("Command bytes: ");
-    for (const char* p = command; *p; p++) {
-        printf("%02x ", (unsigned char)*p);
-    }
-    printf("\n");
-    
     const char* text = extract_command_param(command, "chat");
     if (text && *text) {
-        printf("Extracted text: %s\n", text);
-        printf("Text bytes: ");
-        for (const char* p = text; *p; p++) {
-            printf("%02x ", (unsigned char)*p);
-        }
-        printf("\n");
-        
         if (conn_state->current_state == WS_STATE_AUTHENTICATED || 
             conn_state->current_state == WS_STATE_LISTENING ||
             conn_state->current_state == WS_STATE_SPEAKING) {
-            
-            printf("Sending text message: %s\n", text);
-            printf("Message bytes: ");
-            for (const char* p = text; *p; p++) {
-                printf("%02x ", (unsigned char)*p);
-            }
-            printf("\n");
-            
             send_chat_message(wsi, conn_state, text);
+            // Chat doesn't change the primary state, but we could add a sub-state if needed
         } else {
             fprintf(stderr, "Cannot send chat message in current state: %s\n", 
                    websocket_state_to_string(conn_state->current_state));
@@ -637,19 +556,8 @@ static const command_entry_t command_table[] = {
 };
 
 static void process_command(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    if (!command || !*command) {
-        return;
-    }
+    if (!command || !*command) return;
 
-    // Skip leading whitespace
-    while (*command && isspace((unsigned char)*command)) {
-        command++;
-    }
-
-    if (!*command) {
-        return;  // Empty command after trimming
-    }
-    
     char cmd[256] = { 0 };
     const char* space = strchr(command, ' ');
     size_t cmd_len = space ? (size_t)(space - command) : strlen(command);
@@ -761,10 +669,6 @@ int main(int argc, char **argv) {
         
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
-
-    // Initialize console encoding first
-    init_console_encoding();
-
     struct lws_context_creation_info info;
     struct lws_client_connect_info conn_info;
 
