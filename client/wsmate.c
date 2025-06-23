@@ -20,7 +20,6 @@
 #include <unistd.h>
 #endif
 
-
 #ifndef LWS_CLOSE_STATUS_GOING_AWAY
 #define LWS_CLOSE_STATUS_GOING_AWAY 1001
 #endif
@@ -33,7 +32,6 @@
 #define SERVER_PATH "/xiaozhi/v1"
 
 #define AUTH_TOKEN "testtoken"
-//#define DEVICE_ID "74:3A:F4:36:F2:D2"
 #define DEVICE_ID "b8:f8:62:fc:eb:68"
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
@@ -93,15 +91,6 @@ static void sigint_handler(int sig) {
     interrupted = 1;
 }
 
-static uint64_t get_current_ms(void) {
-#ifdef _WIN32
-    return (uint64_t)GetTickCount64();
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (uint64_t)tv.tv_sec * 1000 + tv.tv_usec / 1000;
-#endif
-}
 
 static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "STT");
@@ -817,12 +806,7 @@ int main(int argc, char **argv) {
     if (service_thread_id) {
         lwsl_user("Waiting for service thread to join (POSIX)...\n");
         void* res;
-        int join_result = pthread_tryjoin_np(service_thread_id, &res);
-        if (join_result != 0) {
-            lwsl_warn("Service thread did not exit cleanly, canceling...\n");
-            pthread_cancel(service_thread_id);
-            pthread_join(service_thread_id, &res);
-        }
+        pthread_join(service_thread_id, &res);
         service_thread_id = 0;
         lwsl_user("Service thread joined (POSIX).\n");
     }
