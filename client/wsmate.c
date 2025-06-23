@@ -72,9 +72,18 @@ static const char *g_hello_msg =
 // Function to initialize console encoding
 static void init_console_encoding(void) {
 #ifdef _WIN32
-    // Set console to UTF-8 mode for both input and output
-    SetConsoleCP(CP_UTF8);
-    SetConsoleOutputCP(CP_UTF8);
+    // Save current console code pages for restoration if needed
+    UINT old_input_cp = GetConsoleCP();
+    UINT old_output_cp = GetConsoleOutputCP();
+    
+    // First, set console to use UTF-8
+    if (!SetConsoleCP(CP_UTF8)) {
+        fprintf(stderr, "Warning: Failed to set console input CP to UTF-8. Error: %lu\n", GetLastError());
+    }
+    
+    if (!SetConsoleOutputCP(CP_UTF8)) {
+        fprintf(stderr, "Warning: Failed to set console output CP to UTF-8. Error: %lu\n", GetLastError());
+    }
     
     // Get console handles
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -87,7 +96,7 @@ static void init_console_encoding(void) {
         SetConsoleMode(hOut, outMode);
     }
     
-    // Set input mode to handle UTF-8
+    // Set input mode
     DWORD inMode = 0;
     if (GetConsoleMode(hIn, &inMode)) {
         inMode |= ENABLE_EXTENDED_FLAGS;
@@ -95,28 +104,16 @@ static void init_console_encoding(void) {
         SetConsoleMode(hIn, inMode);
     }
     
-    // Set console font to support Chinese characters
-    CONSOLE_FONT_INFOEX fontInfo;
-    fontInfo.cbSize = sizeof(fontInfo);
-    if (GetCurrentConsoleFontEx(hOut, FALSE, &fontInfo)) {
-        // Try different fonts that support Chinese characters
-        const wchar_t* fonts[] = {
-            L"NSimSun", L"SimSun-ExtB", L"SimSun", 
-            L"MingLiU", L"PMingLiU", L"Microsoft YaHei",
-            L"SimHei", L"FangSong", L"KaiTi", L"Microsoft JhengHei"
-        };
-        
-        for (int i = 0; i < sizeof(fonts)/sizeof(fonts[0]); i++) {
-            wcscpy_s(fontInfo.FaceName, LF_FACESIZE, fonts[i]);
-            if (SetCurrentConsoleFontEx(hOut, FALSE, &fontInfo)) {
-                printf("Console font set to: %ls\n", fonts[i]);
-                break;
-            }
-        }
-    }
-    
     // Set console title to indicate UTF-8 mode
-    SetConsoleTitleW(L"WebSocket Client (UTF-8 Mode)");    
+    SetConsoleTitleW(L"WebSocket Client (UTF-8 Mode)");
+    
+    // Print current console information
+    printf("Console initialized. Input CP: %u, Output CP: %u\n", 
+           GetConsoleCP(), GetConsoleOutputCP());
+    
+    // Test output
+    printf("Test output - English: Hello, World!\n");
+    printf("Test output - Chinese: 你好，世界！\n");
 #endif
 }
 
@@ -417,50 +414,34 @@ static const char* extract_command_param(const char* command, const char* cmd_na
         param++;
     }
 
-    // This static buffer is not thread-safe, but for this single-threaded client it's acceptable.
     static char buffer[4096];
     memset(buffer, 0, sizeof(buffer));
     
-    // On Windows, we need to handle the input encoding
-#ifdef _WIN32
-    // First try to interpret as UTF-8 directly
-    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, param, -1, NULL, 0);
-    if (wlen > 0) {
-        // Input is valid UTF-8, copy it directly
-        strncpy(buffer, param, sizeof(buffer) - 1);
-    } else {
-        // If not valid UTF-8, try to convert from console code page to UTF-8
-        wlen = MultiByteToWideChar(CP_OEMCP, 0, param, -1, NULL, 0);
-        if (wlen > 0) {
-            wchar_t* wbuf = (wchar_t*)malloc(wlen * sizeof(wchar_t));
-            if (wbuf) {
-                MultiByteToWideChar(CP_OEMCP, 0, param, -1, wbuf, wlen);
-                // Convert to UTF-8
-                WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buffer, sizeof(buffer) - 1, NULL, NULL);
-                free(wbuf);
-            }
-        }
+    // Skip leading quote if present
+    if (*param == '"') {
+        param++;
     }
-#else
-    // On non-Windows, just copy the string
-    strncpy(buffer, param, sizeof(buffer) - 1);
-#endif
-    buffer[sizeof(buffer) - 1] = '\0';
-
-    // Trim trailing whitespace and quotes
+    
+    // Simple copy of the parameter
+    char* dest = buffer;
+    while (*param && *param != '"') {
+        *dest++ = *param++;
+    }
+    *dest = '\0';
+    
+    // Trim trailing whitespace
     char* end = buffer + strlen(buffer) - 1;
-    while (end >= buffer && (isspace((unsigned char)*end) || *end == '"')) {
+    while (end >= buffer && isspace((unsigned char)*end)) {
         *end = '\0';
         end--;
     }
-
-    // Trim leading quote
-    char* start = buffer;
-    if (*start == '"') {
-        start++;
+    
+    // If we have an empty string after trimming, return NULL
+    if (buffer[0] == '\0') {
+        return NULL;
     }
-
-    return start;
+    
+    return buffer;
 }
 
 static void print_help(void) {
@@ -534,13 +515,36 @@ static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const
 }
 
 static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    printf("Processing chat command: %s\n", command);
+    
+    // Debug: Print raw bytes of the command
+    printf("Command bytes: ");
+    for (const char* p = command; *p; p++) {
+        printf("%02x ", (unsigned char)*p);
+    }
+    printf("\n");
+    
     const char* text = extract_command_param(command, "chat");
     if (text && *text) {
+        printf("Extracted text: %s\n", text);
+        printf("Text bytes: ");
+        for (const char* p = text; *p; p++) {
+            printf("%02x ", (unsigned char)*p);
+        }
+        printf("\n");
+        
         if (conn_state->current_state == WS_STATE_AUTHENTICATED || 
             conn_state->current_state == WS_STATE_LISTENING ||
             conn_state->current_state == WS_STATE_SPEAKING) {
+            
+            printf("Sending text message: %s\n", text);
+            printf("Message bytes: ");
+            for (const char* p = text; *p; p++) {
+                printf("%02x ", (unsigned char)*p);
+            }
+            printf("\n");
+            
             send_chat_message(wsi, conn_state, text);
-            // Chat doesn't change the primary state, but we could add a sub-state if needed
         } else {
             fprintf(stderr, "Cannot send chat message in current state: %s\n", 
                    websocket_state_to_string(conn_state->current_state));
