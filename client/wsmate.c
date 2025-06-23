@@ -594,15 +594,47 @@ static void handle_interactive_mode() {
     fprintf(stdout, "\n> ");
     fflush(stdout);
     
+#ifdef _WIN32
+    // Use Windows console API to read input properly on Chinese systems
+    HANDLE hStdin = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode;
+    GetConsoleMode(hStdin, &mode);
+    
+    // Enable line input and echo input
+    SetConsoleMode(hStdin, ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
+    
+    wchar_t wide_input[1024] = {0};
+    DWORD chars_read = 0;
+    
+    if (!ReadConsoleW(hStdin, wide_input, sizeof(wide_input)/sizeof(wchar_t) - 1, &chars_read, NULL)) {
+        // Handle error or EOF
+        fprintf(stdout, "\n");
+        interrupted = 1;
+        return;
+    }
+    
+    // Convert wide characters to UTF-8
+    int utf8_len = WideCharToMultiByte(CP_UTF8, 0, wide_input, chars_read, input, sizeof(input) - 1, NULL, NULL);
+    if (utf8_len <= 0) {
+        fprintf(stderr, "Error converting input to UTF-8\n");
+        return;
+    }
+    input[utf8_len] = '\0';
+    
+    // Restore original console mode
+    SetConsoleMode(hStdin, mode);
+#else
+    // On Unix systems, use standard fgets
     if (fgets(input, sizeof(input), stdin) == NULL) {
         // Handle EOF (Ctrl+D)
         fprintf(stdout, "\n");
         interrupted = 1;
         return;
     }
+#endif
     
-    // Remove trailing newline
-    input[strcspn(input, "\n")] = 0;
+    // Remove trailing newline and carriage return
+    input[strcspn(input, "\r\n")] = 0;
     
     if (strlen(input) == 0) {
         return;
@@ -655,9 +687,6 @@ int main(int argc, char **argv) {
     // Set console to UTF-8 for both input and output to handle Chinese characters correctly
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
-    
-    // We'll use the standard console mode instead of wide character mode
-    // as it's more compatible with the rest of our code
 #endif
     // Initialize random number generator with current time
     srand((unsigned int)time(NULL));
