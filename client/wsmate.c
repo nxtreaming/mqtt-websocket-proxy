@@ -604,12 +604,17 @@ static void handle_opus_send(struct lws* wsi, connection_state_t* conn_state, co
     
     // Read Opus frames from file and send them
     while (fread(&frame_length, sizeof(uint32_t), 1, file) == 1) {
-        // Convert from little endian if needed
-        #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+        // File data is in little endian format
+        // On Windows (little endian), no conversion needed
+        // Only convert if we're on a big endian system
+        #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
         frame_length = ((frame_length & 0xFF) << 24) | 
                       (((frame_length >> 8) & 0xFF) << 16) | 
                       (((frame_length >> 16) & 0xFF) << 8) | 
                       ((frame_length >> 24) & 0xFF);
+        #elif defined(_WIN32)
+        // Windows is always little endian, no conversion needed
+        // frame_length is already correct
         #endif
         
         if (frame_length == 0 || frame_length > sizeof(opus_buffer)) {
