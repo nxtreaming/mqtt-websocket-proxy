@@ -6,8 +6,6 @@
 #ifndef WS_HANDLE_MSG_H
 #define WS_HANDLE_MSG_H
 
-#include <libwebsockets.h>
-#include "cjson/cJSON.h"
 #include "ws_send_msg.h"
 
 /**

@@ -3,10 +3,10 @@
 
 #include <stdio.h>
 #include <stddef.h>
-#include "cjson/cJSON.h"
 #include <stdlib.h>
-#include <libwebsockets.h>
 #include <time.h>
+#include <libwebsockets.h>
+#include "cjson/cJSON.h"
 
 // Audio parameters structure
 typedef struct {

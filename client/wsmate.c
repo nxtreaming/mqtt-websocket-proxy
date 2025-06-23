@@ -2,8 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <libwebsockets.h>
 #include <stdarg.h>
+#include <signal.h>
+
+#include <libwebsockets.h>
+#include "cjson/cJSON.h"
 
 #include "ws_send_msg.h"
 #include "ws_parse_msg.h"
@@ -17,8 +20,6 @@
 #include <unistd.h>
 #endif
 
-#include "cjson/cJSON.h"
-#include <signal.h>
 
 #ifndef LWS_CLOSE_STATUS_GOING_AWAY
 #define LWS_CLOSE_STATUS_GOING_AWAY 1001
