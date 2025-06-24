@@ -190,7 +190,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     // Initialize audio system if not already done
                     static int audio_init_attempted = 0;
                     if (!audio_init_attempted) {
-                        if (ws_audio_init() == 0) {
+                        if (ws_audio_init(0) == 0) { // 使用默认缓冲区大小
                             fprintf(stdout, "Audio system initialized for MP3 playback\n");
                         } else {
                             fprintf(stderr, "Failed to initialize audio system\n");

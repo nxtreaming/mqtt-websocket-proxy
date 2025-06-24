@@ -12,7 +12,7 @@ extern "C" {
  * @param buffer_size Size of the circular buffer in bytes (0 for default)
  * @return 0 on success, -1 on failure
  */
-int ws_audio_init(void);
+int ws_audio_init(size_t buffer_size);
 
 /**
  * @brief Play received MP3 audio data

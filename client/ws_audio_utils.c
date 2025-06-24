@@ -41,8 +41,6 @@ typedef struct {
 
 static circular_buffer_t mp3_buffer = {NULL, 0, 0, 0, 0, 0};
 
-
-
 // Debug macro for audio-related messages
 #define AUDIO_DEBUG(fmt, ...) \
     do { \
@@ -316,7 +314,7 @@ static size_t circular_buffer_peek(circular_buffer_t *cb, unsigned char *dest, s
     return peek_size;
 }
 
-int ws_audio_init(void) {
+int ws_audio_init(size_t buffer_size) {
     if (audio_initialized) {
         fprintf(stderr, "[AUDIO] Audio system already initialized\n");
         return 0;  // Already initialized
@@ -381,23 +379,22 @@ int ws_audio_init(void) {
         return -1;
     }
     
-    // Allocate circular buffer for MP3 data
-    mp3_buffer.buffer = (unsigned char*)malloc(MP3_BUFFER_SIZE);
-    if (!mp3_buffer.buffer) {
-        fprintf(stderr, "[AUDIO] Failed to allocate MP3 circular buffer\n");
-        free(decode_buffer);
-        decode_buffer = NULL;
-        ao_shutdown();
-        mpg123_exit();
-        return -1;
+    // Initialize circular buffer for MP3 data
+    if (!mp3_buffer.initialized) {
+        // Use provided buffer_size or default to 64KB
+        size_t actual_buffer_size = buffer_size > 0 ? buffer_size : MP3_BUFFER_SIZE;  // Default: 64KB buffer
+        mp3_buffer.buffer = (unsigned char*)malloc(actual_buffer_size);
+        if (!mp3_buffer.buffer) {
+            fprintf(stderr, "[AUDIO] Failed to allocate circular buffer\n");
+            return -1;
+        }
+        mp3_buffer.capacity = actual_buffer_size;
+        mp3_buffer.size = 0;
+        mp3_buffer.head = 0;
+        mp3_buffer.tail = 0;
+        mp3_buffer.initialized = 1;
+        fprintf(stderr, "[AUDIO] Initialized circular buffer (%zu bytes)\n", actual_buffer_size);
     }
-    mp3_buffer.capacity = MP3_BUFFER_SIZE;
-    mp3_buffer.head = 0;
-    mp3_buffer.tail = 0;
-    mp3_buffer.size = 0;
-    mp3_buffer.initialized = 1;
-    
-    fprintf(stderr, "[AUDIO] MP3 circular buffer initialized with %zu bytes capacity\n", mp3_buffer.capacity);
     
     // Initialize mpg123 handle
     if (initialize_mpg123_handle() != 0) {
