@@ -185,6 +185,24 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 // Handle binary data (audio frames)
                 fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
                 
+                // 打印前几个字节以帮助识别数据格式
+                if (len > 0) {
+                    fprintf(stdout, "Binary data first 8 bytes: ");
+                    for (size_t i = 0; i < (len < 8 ? len : 8); i++) {
+                        fprintf(stdout, "%02x ", ((unsigned char*)in)[i]);
+                    }
+                    fprintf(stdout, "\n");
+                }
+                
+                // 打印前几个字节以帮助识别数据格式
+                if (len > 0) {
+                    fprintf(stdout, "Binary data first 8 bytes: ");
+                    for (size_t i = 0; i < (len < 8 ? len : 8); i++) {
+                        fprintf(stdout, "%02x ", ((unsigned char*)in)[i]);
+                    }
+                    fprintf(stdout, "\n");
+                }
+                
                 // Try to play the received audio data as MP3
                 if (len > 0) {
                     // Initialize audio system if not already done
@@ -596,6 +614,28 @@ static void handle_opus_send(struct lws* wsi, connection_state_t* conn_state, co
     
     fprintf(stdout, "Reading Opus file: %s\n", filename);
     
+    // Before sending Opus data, first send a listen message with state=start
+    // This tells the server we are starting to send audio data
+    fprintf(stdout, "Sending start listening message before sending Opus data\n");
+    
+    // Use send_start_listening_message which sends a listen message with state=start
+    // This is the correct message to send before streaming audio data
+    if (send_start_listening_message(wsi, conn_state) == 0) {
+        fprintf(stdout, "Start listening message sent successfully\n");
+        // Ensure the state is set to LISTENING after sending the message
+        change_websocket_state(conn_state, WS_STATE_LISTENING);
+        fprintf(stdout, "State confirmed as LISTENING after sending start listening message\n");
+        
+        // Wait a short time to ensure the server has processed the message
+        #ifdef _WIN32
+        Sleep(100);
+        #else
+        usleep(100 * 1000);
+        #endif
+    } else {
+        fprintf(stderr, "Failed to send start listening message\n");
+    }
+    
     uint32_t frame_length;
     unsigned char opus_buffer[4096];
     int frames_sent = 0;
@@ -655,6 +695,16 @@ static void handle_opus_send(struct lws* wsi, connection_state_t* conn_state, co
     fclose(file);
     fprintf(stdout, "Finished sending %d Opus frames from %s (frame duration: %dms)\n", 
             frames_sent, filename, frame_duration_ms);
+    
+    // After sending all Opus frames, send a stop message to indicate we've finished sending audio
+    fprintf(stdout, "Sending stop message to indicate end of audio input\n");
+    
+    // Use the existing send_stop_listening_message function
+    if (send_stop_listening_message(wsi, conn_state) == 0) {
+        fprintf(stdout, "Stop message sent successfully\n");
+    } else {
+        fprintf(stderr, "Failed to send stop message\n");
+    }
 }
 
 static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command) {
