@@ -593,7 +593,7 @@ static int detect_opus_frame_duration(const unsigned char* opus_data, size_t dat
     }
 }
 
-static void handle_opus_send(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* filename = extract_command_param(command, "opus");
     if (!filename || !*filename) {
         fprintf(stderr, "Please provide an Opus file path\n");
@@ -721,7 +721,7 @@ static const command_entry_t command_table[] = {
     {"listen",       handle_listen,       1},
     {"detect",       handle_detect,       1},
     {"chat",         handle_chat,         1},
-    {"opus",         handle_opus_send,    1},
+    {"opus",         handle_opus,         1},
     {"abort",        handle_abort,        1},
     {"abort-reason", handle_abort_reason, 1},
     {"mcp",          handle_mcp,          1},
