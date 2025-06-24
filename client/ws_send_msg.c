@@ -67,11 +67,20 @@ int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
     conn_state->write_is_binary = is_binary;
     conn_state->pending_write = 1;
 
+    // Only log binary frames if they're large or log text frames with condensed content
     if (!is_binary) {
+        // For text frames, show condensed version (first 37 chars + "..." if needed)
+        char preview[41] = {0};
+        size_t copy_len = message_len < 37 ? message_len : 37;
+        strncpy(preview, (const char*)(conn_state->write_buf + LWS_PRE), copy_len);
+        if (message_len > 37) {
+            strcpy(preview + copy_len, "...");
+        }
         fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
-            (unsigned int)message_len, (const char*)(conn_state->write_buf + LWS_PRE));
+            (unsigned int)message_len, preview);
     }
-    else {
+    else if (message_len > 1024) {
+        // Only log binary frames if they're large
         fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
     }
 

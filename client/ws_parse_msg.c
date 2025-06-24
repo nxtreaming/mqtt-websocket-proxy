@@ -86,17 +86,14 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
             conn_state->audio_params.frame_duration = frame_duration->valueint;
         }
         
-        // Print the received audio parameters
-        fprintf(stdout, "Received audio parameters from server:\n");
+        // Print the received audio parameters only in debug mode
         print_audio_params(&conn_state->audio_params);
     } else {
         fprintf(stdout, "  No audio_params in hello message, using defaults.\n");
-        print_audio_params(&conn_state->audio_params);
     }
     
     // Validate transport type
     if (cJSON_IsString(transport_item) && strcmp(transport_item->valuestring, "websocket") == 0) {
-        fprintf(stdout, "Server hello message is valid.\n");
         change_websocket_state(conn_state, WS_STATE_AUTHENTICATED);
 
         // MUST enter listening state: start, otherwise the connection will be closed after 10s
