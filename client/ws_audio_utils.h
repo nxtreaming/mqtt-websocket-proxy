@@ -9,6 +9,7 @@ extern "C" {
 
 /**
  * @brief Initialize the audio playback system
+ * @param buffer_size Size of the circular buffer in bytes (0 for default)
  * @return 0 on success, -1 on failure
  */
 int ws_audio_init(void);

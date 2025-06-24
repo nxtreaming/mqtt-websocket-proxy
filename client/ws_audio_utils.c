@@ -14,6 +14,7 @@
 
 // Configuration constants
 #define AUDIO_BUFFER_SIZE (32768)  // 32KB buffer for better performance
+#define MP3_BUFFER_SIZE (65536)   // 64KB circular buffer for MP3 data
 #define DEBUG_AUDIO 0              // Set to 0 to disable detailed audio debugging
 
 // Static variables for audio playback
@@ -27,6 +28,20 @@ static long current_rate = 0;
 static int current_channels = 0;
 static int current_encoding = 0;
 static unsigned char *decode_buffer = NULL;
+
+// Circular buffer structure for MP3 data
+typedef struct {
+    unsigned char *buffer;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t size;
+    int initialized;
+} circular_buffer_t;
+
+static circular_buffer_t mp3_buffer = {NULL, 0, 0, 0, 0, 0};
+
+
 
 // Debug macro for audio-related messages
 #define AUDIO_DEBUG(fmt, ...) \
@@ -196,6 +211,111 @@ static void restore_stderr(void) {
     }
 }
 
+/**
+ * @brief Write data to the circular buffer
+ * @param data Pointer to the data to write
+ * @param len Length of the data in bytes
+ * @return Number of bytes written
+ */
+static size_t circular_buffer_write(circular_buffer_t *cb, const unsigned char *data, size_t len) {
+    if (!cb || !cb->buffer || !cb->initialized || !data || len == 0) {
+        return 0;
+    }
+    
+    // Calculate available space
+    size_t available = cb->capacity - cb->size;
+    if (available == 0) {
+        AUDIO_DEBUG("Circular buffer full, cannot write more data");
+        return 0;
+    }
+    
+    // Limit write size to available space
+    size_t write_size = (len > available) ? available : len;
+    
+    // Write data in two parts if necessary (wrap around buffer end)
+    size_t first_chunk = cb->capacity - cb->tail;
+    if (write_size <= first_chunk) {
+        // Simple case: no wrap around
+        memcpy(cb->buffer + cb->tail, data, write_size);
+    } else {
+        // Complex case: wrap around
+        memcpy(cb->buffer + cb->tail, data, first_chunk);
+        memcpy(cb->buffer, data + first_chunk, write_size - first_chunk);
+    }
+    
+    // Update tail position
+    cb->tail = (cb->tail + write_size) % cb->capacity;
+    cb->size += write_size;
+    
+    AUDIO_DEBUG("Wrote %zu bytes to circular buffer (size now: %zu/%zu)", 
+               write_size, cb->size, cb->capacity);
+    
+    return write_size;
+}
+
+/**
+ * @brief Read data from the circular buffer
+ * @param dest Destination buffer
+ * @param len Maximum number of bytes to read
+ * @return Number of bytes read
+ */
+static size_t circular_buffer_read(circular_buffer_t *cb, unsigned char *dest, size_t len) {
+    if (!cb || !cb->buffer || !cb->initialized || !dest || len == 0 || cb->size == 0) {
+        return 0;
+    }
+    
+    // Limit read size to available data
+    size_t read_size = (len > cb->size) ? cb->size : len;
+    
+    // Read data in two parts if necessary (wrap around buffer end)
+    size_t first_chunk = cb->capacity - cb->head;
+    if (read_size <= first_chunk) {
+        // Simple case: no wrap around
+        memcpy(dest, cb->buffer + cb->head, read_size);
+    } else {
+        // Complex case: wrap around
+        memcpy(dest, cb->buffer + cb->head, first_chunk);
+        memcpy(dest + first_chunk, cb->buffer, read_size - first_chunk);
+    }
+    
+    // Update head position
+    cb->head = (cb->head + read_size) % cb->capacity;
+    cb->size -= read_size;
+    
+    AUDIO_DEBUG("Read %zu bytes from circular buffer (size now: %zu/%zu)", 
+              read_size, cb->size, cb->capacity);
+    
+    return read_size;
+}
+
+/**
+ * @brief Peek at data in the circular buffer without removing it
+ * @param dest Destination buffer
+ * @param len Maximum number of bytes to peek
+ * @return Number of bytes peeked
+ */
+static size_t circular_buffer_peek(circular_buffer_t *cb, unsigned char *dest, size_t len) {
+    if (!cb || !cb->buffer || !cb->initialized || !dest || len == 0 || cb->size == 0) {
+        return 0;
+    }
+    
+    // Limit peek size to available data
+    size_t peek_size = (len > cb->size) ? cb->size : len;
+    
+    // Peek data in two parts if necessary (wrap around buffer end)
+    size_t first_chunk = cb->capacity - cb->head;
+    if (peek_size <= first_chunk) {
+        // Simple case: no wrap around
+        memcpy(dest, cb->buffer + cb->head, peek_size);
+    } else {
+        // Complex case: wrap around
+        memcpy(dest, cb->buffer + cb->head, first_chunk);
+        memcpy(dest + first_chunk, cb->buffer, peek_size - first_chunk);
+    }
+    
+    return peek_size;
+}
+
 int ws_audio_init(void) {
     if (audio_initialized) {
         fprintf(stderr, "[AUDIO] Audio system already initialized\n");
@@ -261,6 +381,24 @@ int ws_audio_init(void) {
         return -1;
     }
     
+    // Allocate circular buffer for MP3 data
+    mp3_buffer.buffer = (unsigned char*)malloc(MP3_BUFFER_SIZE);
+    if (!mp3_buffer.buffer) {
+        fprintf(stderr, "[AUDIO] Failed to allocate MP3 circular buffer\n");
+        free(decode_buffer);
+        decode_buffer = NULL;
+        ao_shutdown();
+        mpg123_exit();
+        return -1;
+    }
+    mp3_buffer.capacity = MP3_BUFFER_SIZE;
+    mp3_buffer.head = 0;
+    mp3_buffer.tail = 0;
+    mp3_buffer.size = 0;
+    mp3_buffer.initialized = 1;
+    
+    fprintf(stderr, "[AUDIO] MP3 circular buffer initialized with %zu bytes capacity\n", mp3_buffer.capacity);
+    
     // Initialize mpg123 handle
     if (initialize_mpg123_handle() != 0) {
         free(decode_buffer);
@@ -296,20 +434,33 @@ int ws_audio_play_mp3(const void *data, size_t len) {
         fprintf(stderr, "[AUDIO] Failed to initialize mpg123 handle\n");
         return -1;
     }
-
-    // Feed the data
-    int feed_result = mpg123_feed(mh, data, len);
-    if (feed_result != MPG123_OK) {
-        fprintf(stderr, "[AUDIO] Failed to feed audio data: %s\n", mpg123_plain_strerror(feed_result));
-        // Try to recover by reinitializing the handle
-        if (initialize_mpg123_handle() != 0) {
-            return -1;
-        }
-        // Try feeding again
-        feed_result = mpg123_feed(mh, data, len);
+    
+    // Add new data to circular buffer
+    size_t bytes_written = circular_buffer_write(&mp3_buffer, data, len);
+    if (bytes_written < len) {
+        fprintf(stderr, "[AUDIO] Warning: Could only buffer %zu of %zu bytes (buffer full)\n", 
+                bytes_written, len);
+    }
+    
+    // Use a temporary buffer for feeding data to mpg123
+    unsigned char temp_buffer[4096];
+    size_t bytes_read = circular_buffer_read(&mp3_buffer, temp_buffer, sizeof(temp_buffer));
+    
+    // Feed the data from circular buffer
+    if (bytes_read > 0) {
+        int feed_result = mpg123_feed(mh, temp_buffer, bytes_read);
         if (feed_result != MPG123_OK) {
-            fprintf(stderr, "[AUDIO] Failed to feed audio data after reinit: %s\n", mpg123_plain_strerror(feed_result));
-            return -1;
+            fprintf(stderr, "[AUDIO] Failed to feed audio data: %s\n", mpg123_plain_strerror(feed_result));
+            // Try to recover by reinitializing the handle
+            if (initialize_mpg123_handle() != 0) {
+                return -1;
+            }
+            // Try feeding again
+            feed_result = mpg123_feed(mh, temp_buffer, bytes_read);
+            if (feed_result != MPG123_OK) {
+                fprintf(stderr, "[AUDIO] Failed to feed audio data after reinit: %s\n", mpg123_plain_strerror(feed_result));
+                return -1;
+            }
         }
     }
 
@@ -319,8 +470,10 @@ int ws_audio_play_mp3(const void *data, size_t len) {
     long rate = 0;
     int format_initialized = 0;
     int bytes_decoded = 0;
+    int max_decode_iterations = 10; // Limit iterations to prevent blocking too long
 
     // Decode and play loop
+    int iterations = 0;
     do {
         // Read decoded data
         err = mpg123_read(mh, decode_buffer, AUDIO_BUFFER_SIZE, &done);
@@ -366,26 +519,45 @@ int ws_audio_play_mp3(const void *data, size_t len) {
             bytes_decoded += done;
         }
         
+        // If we need more data and have some in the buffer, feed it
+        if (err == MPG123_NEED_MORE && mp3_buffer.size > 0) {
+            unsigned char additional_buffer[4096];
+            size_t additional_bytes_read = circular_buffer_read(&mp3_buffer, additional_buffer, sizeof(additional_buffer));
+            
+            if (additional_bytes_read > 0) {
+                AUDIO_DEBUG("Feeding %zu more bytes from circular buffer", additional_bytes_read);
+                int feed_result = mpg123_feed(mh, additional_buffer, additional_bytes_read);
+                if (feed_result == MPG123_OK) {
+                    // Reset error to continue the loop
+                    err = MPG123_OK;
+                }
+            }
+        }
+        
+        // Prevent infinite loop by limiting iterations
+        iterations++;
+        if (iterations >= max_decode_iterations) {
+            AUDIO_DEBUG("Reached maximum decode iterations (%d)", max_decode_iterations);
+            break;
+        }
+        
     } while (err == MPG123_OK || err == MPG123_NEW_FORMAT);
-    
-    // Handle end of stream - feed some silence to avoid clicks
-    if (dev && bytes_decoded > 0) {
-        memset(decode_buffer, 0, 1024); // Small buffer of silence
-        ao_play(dev, (char*)decode_buffer, 1024);
-    }
     
     // Check for expected end conditions
     if (err == MPG123_DONE) {
         fprintf(stderr, "[AUDIO] Decoding completed successfully (%d bytes)\n", bytes_decoded);
         return 0;
     } else if (err == MPG123_NEED_MORE) {
-        fprintf(stderr, "[AUDIO] Decoder needs more data (%d bytes decoded so far)\n", bytes_decoded);
+        // This is normal - we'll get more data in the next callback
+        AUDIO_DEBUG("Decoder needs more data (%d bytes decoded so far)", bytes_decoded);
         return 0;
-    } else {
-        fprintf(stderr, "[AUDIO] Decoding error: %s (%d bytes decoded)\n", 
-                mpg123_plain_strerror(err), bytes_decoded);
-        return (bytes_decoded > 0) ? 0 : -1; // Return success if we played something
+    } else if (err != MPG123_OK && bytes_decoded == 0) {
+        fprintf(stderr, "[AUDIO] Decoding error: %s (no bytes decoded)\n", 
+                mpg123_plain_strerror(err));
+        return -1;
     }
+    
+    return 0; // Return success if we got here
 }
 
 void ws_audio_cleanup(void) {
@@ -416,6 +588,14 @@ void ws_audio_cleanup(void) {
     if (decode_buffer) {
         free(decode_buffer);
         decode_buffer = NULL;
+    }
+    
+    // Free circular buffer
+    if (mp3_buffer.buffer) {
+        fprintf(stderr, "[AUDIO] Freeing MP3 circular buffer\n");
+        free(mp3_buffer.buffer);
+        mp3_buffer.buffer = NULL;
+        mp3_buffer.initialized = 0;
     }
     
     // Shut down audio libraries
