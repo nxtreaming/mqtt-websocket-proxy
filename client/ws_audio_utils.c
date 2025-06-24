@@ -439,24 +439,75 @@ int ws_audio_play_mp3(const void *data, size_t len) {
                 bytes_written, len);
     }
     
-    // Use a temporary buffer for feeding data to mpg123
-    unsigned char temp_buffer[4096];
-    size_t bytes_read = circular_buffer_read(&mp3_buffer, temp_buffer, sizeof(temp_buffer));
+    // Use circular_buffer_peek to avoid unnecessary memory copy
+    // First check how much data we have available
+    size_t available_data = mp3_buffer.size;
     
-    // Feed the data from circular buffer
-    if (bytes_read > 0) {
-        int feed_result = mpg123_feed(mh, temp_buffer, bytes_read);
-        if (feed_result != MPG123_OK) {
-            fprintf(stderr, "[AUDIO] Failed to feed audio data: %s\n", mpg123_plain_strerror(feed_result));
-            // Try to recover by reinitializing the handle
-            if (initialize_mpg123_handle() != 0) {
-                return -1;
+    if (available_data > 0) {
+        // Allocate a buffer only if we need to handle wrap-around case
+        // For simple case, we'll use direct pointer to the buffer
+        unsigned char *data_ptr;
+        unsigned char temp_buffer[4096];
+        size_t bytes_to_feed;
+        
+        // Check if data wraps around buffer end
+        size_t contiguous_data = mp3_buffer.capacity - mp3_buffer.head;
+        if (available_data <= contiguous_data) {
+            // Simple case: data is contiguous in memory
+            // Use direct pointer to avoid memory copy
+            data_ptr = mp3_buffer.buffer + mp3_buffer.head;
+            bytes_to_feed = available_data;
+            
+            // Feed the data directly from the circular buffer
+            int feed_result = mpg123_feed(mh, data_ptr, bytes_to_feed);
+            if (feed_result == MPG123_OK) {
+                // Update read position only after successful feed
+                mp3_buffer.head = (mp3_buffer.head + bytes_to_feed) % mp3_buffer.capacity;
+                mp3_buffer.size -= bytes_to_feed;
+                AUDIO_DEBUG("Fed %zu bytes directly from buffer (no copy)", bytes_to_feed);
+            } else {
+                fprintf(stderr, "[AUDIO] Failed to feed audio data: %s\n", mpg123_plain_strerror(feed_result));
+                // Try to recover by reinitializing the handle
+                if (initialize_mpg123_handle() != 0) {
+                    return -1;
+                }
+                // Try feeding again
+                feed_result = mpg123_feed(mh, data_ptr, bytes_to_feed);
+                if (feed_result != MPG123_OK) {
+                    fprintf(stderr, "[AUDIO] Failed to feed audio data after reinit: %s\n", mpg123_plain_strerror(feed_result));
+                    return -1;
+                }
+                // Update read position
+                mp3_buffer.head = (mp3_buffer.head + bytes_to_feed) % mp3_buffer.capacity;
+                mp3_buffer.size -= bytes_to_feed;
             }
-            // Try feeding again
-            feed_result = mpg123_feed(mh, temp_buffer, bytes_read);
-            if (feed_result != MPG123_OK) {
-                fprintf(stderr, "[AUDIO] Failed to feed audio data after reinit: %s\n", mpg123_plain_strerror(feed_result));
-                return -1;
+        } else {
+            // Complex case: data wraps around buffer end
+            // We need to use a temporary buffer in this case
+            bytes_to_feed = (available_data > sizeof(temp_buffer)) ? sizeof(temp_buffer) : available_data;
+            size_t bytes_peeked = circular_buffer_peek(&mp3_buffer, temp_buffer, bytes_to_feed);
+            
+            // Feed the data from the temporary buffer
+            int feed_result = mpg123_feed(mh, temp_buffer, bytes_peeked);
+            if (feed_result == MPG123_OK) {
+                // Now that we've successfully fed the data, we can remove it from the buffer
+                // We use circular_buffer_read to update the read position
+                circular_buffer_read(&mp3_buffer, temp_buffer, bytes_peeked);
+                AUDIO_DEBUG("Fed %zu bytes using temporary buffer (wrap-around case)", bytes_peeked);
+            } else {
+                fprintf(stderr, "[AUDIO] Failed to feed audio data: %s\n", mpg123_plain_strerror(feed_result));
+                // Try to recover by reinitializing the handle
+                if (initialize_mpg123_handle() != 0) {
+                    return -1;
+                }
+                // Try feeding again
+                feed_result = mpg123_feed(mh, temp_buffer, bytes_peeked);
+                if (feed_result != MPG123_OK) {
+                    fprintf(stderr, "[AUDIO] Failed to feed audio data after reinit: %s\n", mpg123_plain_strerror(feed_result));
+                    return -1;
+                }
+                // Now remove the data from the buffer
+                circular_buffer_read(&mp3_buffer, temp_buffer, bytes_peeked);
             }
         }
     }
