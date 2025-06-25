@@ -117,26 +117,6 @@ int send_mcp_response(struct lws* wsi, connection_state_t* conn_state, int rpc_i
     return send_json_object(wsi, conn_state, root);
 }
 
-int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, size_t frame_size) {
-    if (!wsi || !conn_state || frame_size == 0 || frame_size > 4096) {
-        fprintf(stderr, "Error: Invalid parameters for send_binary_frame\n");
-        return -1;
-    }
-    
-    unsigned char buffer[4096];
-    for (size_t i = 0; i < frame_size; i++) {
-        buffer[i] = (unsigned char)(i & 0xFF);
-    }
-    
-    int result = send_ws_message(wsi, conn_state, (const char*)buffer, frame_size, 1);
-    
-    if (result == 0) {
-        fprintf(stdout, "Sent binary frame (%zu bytes)\n", frame_size);
-    }
-    
-    return result;
-}
-
 int send_stop_listening_message(struct lws *wsi, connection_state_t *conn_state) {
     fprintf(stdout, "Sending stop listening message\n");
 

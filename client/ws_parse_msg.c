@@ -86,8 +86,10 @@ void handle_hello_message(struct lws *wsi, cJSON *json_response) {
             conn_state->audio_params.frame_duration = frame_duration->valueint;
         }
         
+#ifdef WS_ENABLE_DEBUG
         // Print the received audio parameters only in debug mode
         print_audio_params(&conn_state->audio_params);
+#endif
     } else {
         fprintf(stdout, "  No audio_params in hello message, using defaults.\n");
     }

@@ -98,7 +98,6 @@ static void sigint_handler(int sig) {
     interrupted = 1;
 }
 
-
 static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "STT");
 }
@@ -185,8 +184,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 // Handle binary data (audio frames)
                 fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
                 
-                
-                // Try to play the received audio data as MP3
+                 // Try to play the received audio data as MP3
                 if (len > 0) {
                     // Initialize audio system if not already done
                     static int audio_init_attempted = 0;
@@ -603,11 +601,11 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
         change_websocket_state(conn_state, WS_STATE_LISTENING);
         
         // Add a small delay to ensure the server processes the message
-        #ifdef _WIN32
+#ifdef _WIN32
         Sleep(100);
-        #else
+#else
         usleep(100000);
-        #endif
+#endif
     } else {
         fprintf(stderr, "Failed to send start listening message\n");
     }
@@ -623,15 +621,15 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
         // File data is in little endian format
         // On Windows (little endian), no conversion needed
         // Only convert if we're on a big endian system
-        #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
         frame_length = ((frame_length & 0xFF) << 24) | 
                       (((frame_length >> 8) & 0xFF) << 16) | 
                       (((frame_length >> 16) & 0xFF) << 8) | 
                       ((frame_length >> 24) & 0xFF);
-        #elif defined(_WIN32)
+#elif defined(_WIN32)
         // Windows is always little endian, no conversion needed
         // frame_length is already correct
-        #endif
+#endif
         
         if (frame_length == 0 || frame_length > sizeof(opus_buffer)) {
             fprintf(stderr, "Invalid Opus frame length: %u\n", frame_length);
@@ -664,11 +662,11 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
         }
         
         // Delay based on detected frame duration
-        #ifdef _WIN32
+#ifdef _WIN32
         Sleep(frame_duration_ms);
-        #else
+#else
         usleep(frame_duration_ms * 1000);
-        #endif
+#endif
     }
     
     fclose(file);

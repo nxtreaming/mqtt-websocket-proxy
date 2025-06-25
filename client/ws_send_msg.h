@@ -8,6 +8,8 @@
 #include <libwebsockets.h>
 #include "cjson/cJSON.h"
 
+//#define WS_ENABLE_DEBUG
+
 // Audio parameters structure
 typedef struct {
     char format[32];           // Audio format (e.g., "opus")
@@ -96,16 +98,6 @@ int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char*
  * @return 0 on success, -1 on failure
  */
 int send_mcp_response(struct lws* wsi, connection_state_t* conn_state, int rpc_id, cJSON* result);
-
-/**
- * Send a binary frame over WebSocket
- * 
- * @param wsi WebSocket instance
- * @param conn_state Connection state
- * @param frame_size Size of the binary frame to send
- * @return 0 on success, -1 on failure
- */
-int send_binary_frame(struct lws *wsi, connection_state_t *conn_state, size_t frame_size);
 
 /**
  * Send a stop listening message over WebSocket
