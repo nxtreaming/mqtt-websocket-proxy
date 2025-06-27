@@ -247,23 +247,34 @@ int send_mcp_message(struct lws *wsi, connection_state_t *conn_state, const char
 
 void init_connection_state(connection_state_t *conn_state) {
     if (!conn_state) return;
-    
+
     memset(conn_state, 0, sizeof(connection_state_t));
     conn_state->current_state = WS_STATE_DISCONNECTED;
     conn_state->previous_state = WS_STATE_DISCONNECTED;
-    
+
     // Set default audio parameters
     strncpy(conn_state->audio_params.format, "opus", sizeof(conn_state->audio_params.format) - 1);
     conn_state->audio_params.sample_rate = 16000;
     conn_state->audio_params.channels = 1;
     conn_state->audio_params.frame_duration = 60;
-    
+
     // Initialize protocol compliance tracking
     conn_state->protocol_version = 1;
     conn_state->features_mcp = 1;
     conn_state->features_stt = 1;
     conn_state->features_tts = 1;
     conn_state->features_llm = 1;
+
+    // Initialize reconnection settings with default values
+    conn_state->reconnection_enabled = 1;  // Enable by default
+    conn_state->max_reconnection_attempts = 5;  // Default: 5 attempts
+    conn_state->initial_reconnection_delay = 1000;  // Default: 1 second
+    conn_state->max_reconnection_delay = 30000;  // Default: 30 seconds
+    conn_state->backoff_multiplier = 2.0;  // Default: exponential backoff
+    conn_state->reconnection_delay = conn_state->initial_reconnection_delay;
+
+    // Initialize audio playback settings
+    conn_state->audio_timeout_seconds = 120;  // Default: 2 minutes timeout
 }
 
 int change_websocket_state(connection_state_t *conn_state, websocket_state_t new_state) {
@@ -349,5 +360,118 @@ int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to
             
         default:
             return 0; // Invalid from_state
+    }
+}
+
+// Reconnection management functions
+void set_reconnection_policy(connection_state_t *conn_state, int enable, int max_attempts,
+                           int initial_delay, int max_delay, double backoff_multiplier) {
+    if (!conn_state) return;
+
+    conn_state->reconnection_enabled = enable;
+    conn_state->max_reconnection_attempts = max_attempts;
+    conn_state->initial_reconnection_delay = initial_delay;
+    conn_state->max_reconnection_delay = max_delay;
+    conn_state->backoff_multiplier = backoff_multiplier;
+    conn_state->reconnection_delay = initial_delay;
+
+    fprintf(stdout, "Reconnection policy set: enabled=%s, max_attempts=%d, initial_delay=%dms, max_delay=%dms, backoff=%.1f\n",
+            enable ? "true" : "false", max_attempts, initial_delay, max_delay, backoff_multiplier);
+}
+
+int should_attempt_reconnection(connection_state_t *conn_state) {
+    if (!conn_state || !conn_state->reconnection_enabled) {
+        return 0;
+    }
+
+    // Check if we've exceeded maximum attempts (0 means unlimited)
+    if (conn_state->max_reconnection_attempts > 0 &&
+        conn_state->reconnection_attempts >= conn_state->max_reconnection_attempts) {
+        fprintf(stderr, "Maximum reconnection attempts (%d) reached\n", conn_state->max_reconnection_attempts);
+        return 0;
+    }
+
+    return 1;
+}
+
+int calculate_reconnection_delay(connection_state_t *conn_state) {
+    if (!conn_state) return 1000;
+
+    // Calculate next delay using exponential backoff
+    int next_delay = (int)(conn_state->reconnection_delay * conn_state->backoff_multiplier);
+
+    // Cap at maximum delay
+    if (next_delay > conn_state->max_reconnection_delay) {
+        next_delay = conn_state->max_reconnection_delay;
+    }
+
+    conn_state->reconnection_delay = next_delay;
+    return next_delay;
+}
+
+void reset_reconnection_state(connection_state_t *conn_state) {
+    if (!conn_state) return;
+
+    conn_state->reconnection_attempts = 0;
+    conn_state->reconnection_delay = conn_state->initial_reconnection_delay;
+    conn_state->connection_lost = 0;
+
+    fprintf(stdout, "Reconnection state reset after successful connection\n");
+}
+
+// Audio playback management functions
+void set_audio_timeout(connection_state_t *conn_state, int timeout_seconds) {
+    if (!conn_state) return;
+
+    conn_state->audio_timeout_seconds = timeout_seconds;
+    fprintf(stdout, "Audio timeout set to %d seconds\n", timeout_seconds);
+}
+
+void start_audio_playback(connection_state_t *conn_state) {
+    if (!conn_state) return;
+
+    conn_state->audio_playing = 1;
+    conn_state->audio_start_time = time(NULL);
+    conn_state->audio_interrupted = 0;
+
+    fprintf(stdout, "Audio playback started at %ld\n", (long)conn_state->audio_start_time);
+}
+
+void stop_audio_playback(connection_state_t *conn_state) {
+    if (!conn_state) return;
+
+    if (conn_state->audio_playing) {
+        time_t duration = time(NULL) - conn_state->audio_start_time;
+        fprintf(stdout, "Audio playback stopped after %ld seconds\n", (long)duration);
+    }
+
+    conn_state->audio_playing = 0;
+    conn_state->audio_start_time = 0;
+    conn_state->audio_interrupted = 0;
+}
+
+int is_audio_playback_timeout(connection_state_t *conn_state) {
+    if (!conn_state || !conn_state->audio_playing || conn_state->audio_timeout_seconds <= 0) {
+        return 0;
+    }
+
+    time_t current_time = time(NULL);
+    time_t elapsed = current_time - conn_state->audio_start_time;
+
+    if (elapsed >= conn_state->audio_timeout_seconds) {
+        fprintf(stderr, "Audio playback timeout: %ld seconds elapsed (limit: %d)\n",
+                (long)elapsed, conn_state->audio_timeout_seconds);
+        return 1;
+    }
+
+    return 0;
+}
+
+void interrupt_audio_playback(connection_state_t *conn_state) {
+    if (!conn_state) return;
+
+    if (conn_state->audio_playing) {
+        conn_state->audio_interrupted = 1;
+        fprintf(stdout, "Audio playback interrupted by user\n");
     }
 }

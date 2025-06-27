@@ -36,7 +36,7 @@ typedef struct {
     // Formal state machine
     websocket_state_t current_state;
     websocket_state_t previous_state;
-    
+
     // Connection state (legacy - kept for compatibility)
     int connected;
     int hello_sent;
@@ -45,26 +45,43 @@ typedef struct {
     int listen_stopped;
     time_t listen_sent_time;
     time_t last_activity;       // Timestamp of last activity (for keep-alive)
-    
+
     // Message state
     int pending_write;
     size_t write_len;
     int write_is_binary;
     unsigned char write_buf[LWS_PRE + 4096];  // Buffer for outgoing messages
-    
+
     // Session information
     char session_id[64];  // Store session ID from server hello
     char stt_text[1024];  // Store STT recognized text
-    
+
     // Connection control
     int should_close;        // Flag to indicate connection should be closed
     int interactive_mode;    // Flag to indicate interactive mode is active
     int should_send_abort;   // Flag to indicate abort message should be sent
-    
+
+    // Reconnection control
+    int reconnection_enabled;     // Flag to enable/disable reconnection
+    int reconnection_attempts;    // Current number of reconnection attempts
+    int max_reconnection_attempts; // Maximum number of reconnection attempts
+    int reconnection_delay;       // Current reconnection delay in milliseconds
+    int initial_reconnection_delay; // Initial reconnection delay in milliseconds
+    int max_reconnection_delay;   // Maximum reconnection delay in milliseconds
+    double backoff_multiplier;    // Backoff multiplier for exponential backoff
+    time_t last_reconnection_time; // Timestamp of last reconnection attempt
+    int connection_lost;          // Flag indicating connection was lost
+
+    // Audio playback control
+    int audio_playing;           // Flag indicating audio is currently playing
+    time_t audio_start_time;     // Timestamp when audio playback started
+    int audio_timeout_seconds;   // Audio playback timeout in seconds
+    int audio_interrupted;       // Flag indicating audio was interrupted
+
     audio_params_t audio_params; // Audio parameters
     // Timeout handling
     time_t hello_sent_time;
-    
+
     // Protocol compliance tracking
     int protocol_version;    // Protocol version from server
     int features_mcp;        // MCP feature support
@@ -187,5 +204,77 @@ const char* websocket_state_to_string(websocket_state_t state);
  * @return 1 if valid, 0 if invalid
  */
 int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to_state);
+
+/**
+ * Reconnection management functions
+ */
+
+/**
+ * Set reconnection policy
+ * @param conn_state Connection state
+ * @param enable Enable/disable reconnection
+ * @param max_attempts Maximum number of reconnection attempts (0 = unlimited)
+ * @param initial_delay Initial reconnection delay in milliseconds
+ * @param max_delay Maximum reconnection delay in milliseconds
+ * @param backoff_multiplier Backoff multiplier for exponential backoff
+ */
+void set_reconnection_policy(connection_state_t *conn_state, int enable, int max_attempts,
+                           int initial_delay, int max_delay, double backoff_multiplier);
+
+/**
+ * Check if reconnection should be attempted
+ * @param conn_state Connection state
+ * @return 1 if reconnection should be attempted, 0 otherwise
+ */
+int should_attempt_reconnection(connection_state_t *conn_state);
+
+/**
+ * Calculate next reconnection delay using exponential backoff
+ * @param conn_state Connection state
+ * @return Next reconnection delay in milliseconds
+ */
+int calculate_reconnection_delay(connection_state_t *conn_state);
+
+/**
+ * Reset reconnection state after successful connection
+ * @param conn_state Connection state
+ */
+void reset_reconnection_state(connection_state_t *conn_state);
+
+/**
+ * Audio playback management functions
+ */
+
+/**
+ * Set audio playback timeout
+ * @param conn_state Connection state
+ * @param timeout_seconds Timeout in seconds (0 = no timeout)
+ */
+void set_audio_timeout(connection_state_t *conn_state, int timeout_seconds);
+
+/**
+ * Start audio playback tracking
+ * @param conn_state Connection state
+ */
+void start_audio_playback(connection_state_t *conn_state);
+
+/**
+ * Stop audio playback tracking
+ * @param conn_state Connection state
+ */
+void stop_audio_playback(connection_state_t *conn_state);
+
+/**
+ * Check if audio playback has timed out
+ * @param conn_state Connection state
+ * @return 1 if timed out, 0 otherwise
+ */
+int is_audio_playback_timeout(connection_state_t *conn_state);
+
+/**
+ * Interrupt current audio playback
+ * @param conn_state Connection state
+ */
+void interrupt_audio_playback(connection_state_t *conn_state);
 
 #endif // WS_SEND_MSG_H

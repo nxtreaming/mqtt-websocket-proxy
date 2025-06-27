@@ -221,12 +221,17 @@ void handle_tts_message(struct lws *wsi, cJSON *json_response) {
     const cJSON *state_item = cJSON_GetObjectItemCaseSensitive(json_response, "state");
     if (cJSON_IsString(state_item) && state_item->valuestring) {
         fprintf(stdout, "    TTS State: %s\n", state_item->valuestring);
-        
+
         // Handle different TTS states
         if (strcmp(state_item->valuestring, "start") == 0) {
             fprintf(stdout, "    TTS playback starting, audio will come via binary frames\n");
+            start_audio_playback(conn_state);
         } else if (strcmp(state_item->valuestring, "stop") == 0) {
             fprintf(stdout, "    TTS playback stopped\n");
+            stop_audio_playback(conn_state);
+        } else if (strcmp(state_item->valuestring, "done") == 0) {
+            fprintf(stdout, "    TTS playback completed\n");
+            stop_audio_playback(conn_state);
         }
     }
     
