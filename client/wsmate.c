@@ -63,6 +63,11 @@ static int interrupted = 0;
 //
 // ffmpeg -i .\opus_input.ogg -ac 1 -ar 16000 -c:a libopus -b:a 16K  -vbr:a off -application voip -frame_duration 40  cbr.ogg
 //
+// Note：
+//       The current device（W800 SoC) only supports OPUS frame_duration: 40ms
+//       The client uploads *OPUS* audio to Server, but the server returns the *MP3* audio data
+//       because the device only supports MP3 playback.
+//
 static const char *g_hello_msg = 
     "{\"type\":\"hello\","
     "\"version\":1,"
