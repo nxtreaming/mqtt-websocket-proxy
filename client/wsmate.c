@@ -394,60 +394,9 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 fprintf(stderr, "Error: No connection state in WRITEABLE callback\n");
                 return -1;
             }
-            
-            if (write_state->pending_write) {
-                // Get a pointer to the buffer after the LWS_PRE bytes
-                unsigned char *buf = (unsigned char *)write_state->write_buf + LWS_PRE;
-                size_t wlen = write_state->write_len;
-                
-                // Determine the write flags
-                enum lws_write_protocol write_flags = write_state->write_is_binary ? 
-                    LWS_WRITE_BINARY : LWS_WRITE_TEXT;
-                
-                // Ensure we have a valid write length
-                if (wlen == 0) {
-                    fprintf(stderr, "Error: Attempted to send zero-length message\n");
-                    write_state->pending_write = 0;
-                    break;
-                }
-                
-                // For text messages, ensure proper null termination for logging
-                if (!write_state->write_is_binary) {
-                    if (wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
-                        buf[wlen] = '\0';
-                    } else {
-                        fprintf(stderr, "Error: Message too long for buffer\n");
-                        write_state->pending_write = 0;
-                        break;
-                    }
-                }
-                
-                // Send the message with proper WebSocket framing
-                int write_result = lws_write(wsi, buf, wlen, write_flags);
-                if (write_result < 0) {
-                    fprintf(stderr, "Error %d writing to WebSocket\n", write_result);
-                    return -1;
-                } else if (write_result != (int)wlen) {
-                    fprintf(stderr, "Partial write: %d of %u bytes written\n", write_result, (unsigned int)wlen);
-                    return -1;
-                }
-                
-                // Clear the pending write flag since we've sent the message
-                write_state->pending_write = 0;
-                fprintf(stdout, "Successfully sent %s message\n", write_state->write_is_binary ? "binary" : "text");
-                
-                // Update connection state based on what was sent
-                if (write_state->current_state == WS_STATE_CONNECTED) {
-                    // This was the hello message
-                    change_websocket_state(write_state, WS_STATE_HELLO_SENT);
-                    write_state->hello_sent_time = time(NULL);
-                    fprintf(stdout, "Client hello sent at %ld\n", (long)write_state->hello_sent_time);
-                } else if (write_state->current_state == WS_STATE_LISTENING && !write_state->write_is_binary) {
-                    // This was the listen message (not a binary frame)
-                    fprintf(stdout, "Listen message sent successfully\n");                    
-                }
-            }
-            else if (write_state->should_send_abort) {
+
+            // Handle abort message with highest priority
+            if (write_state->should_send_abort) {
                 const char *abort_msg = "{\"type\":\"abort\"}";
                 int result = send_ws_message(wsi, write_state, abort_msg, strlen(abort_msg), 0);
                 if (result == 0) {
@@ -459,8 +408,11 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     fprintf(stderr, "Failed to send abort message\n");
                 }
                 write_state->should_send_abort = 0;
+                break; // Exit after handling abort
             }
-            else if (write_state->should_send_ping) {
+
+            // Handle ping frame with high priority
+            if (write_state->should_send_ping) {
                 // Send WebSocket ping frame for keep-alive
                 unsigned char ping_payload[4] = {0x50, 0x49, 0x4E, 0x47}; // "PING"
                 int ping_result = lws_write(wsi, ping_payload, sizeof(ping_payload), LWS_WRITE_PING);
@@ -470,6 +422,61 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     fprintf(stderr, "Failed to send WebSocket ping frame\n");
                 }
                 write_state->should_send_ping = 0;
+                // Don't break here, continue to handle pending_write if any
+            }
+
+            // Handle regular pending write messages
+            if (write_state->pending_write) {
+                // Get a pointer to the buffer after the LWS_PRE bytes
+                unsigned char *buf = (unsigned char *)write_state->write_buf + LWS_PRE;
+                size_t wlen = write_state->write_len;
+
+                // Determine the write flags
+                enum lws_write_protocol write_flags = write_state->write_is_binary ?
+                    LWS_WRITE_BINARY : LWS_WRITE_TEXT;
+
+                // Ensure we have a valid write length
+                if (wlen == 0) {
+                    fprintf(stderr, "Error: Attempted to send zero-length message\n");
+                    write_state->pending_write = 0;
+                    break;
+                }
+
+                // For text messages, ensure proper null termination for logging
+                if (!write_state->write_is_binary) {
+                    if (wlen < (sizeof(write_state->write_buf) - LWS_PRE - 1)) {
+                        buf[wlen] = '\0';
+                    } else {
+                        fprintf(stderr, "Error: Message too long for buffer\n");
+                        write_state->pending_write = 0;
+                        break;
+                    }
+                }
+
+                // Send the message with proper WebSocket framing
+                int write_result = lws_write(wsi, buf, wlen, write_flags);
+                if (write_result < 0) {
+                    fprintf(stderr, "Error %d writing to WebSocket\n", write_result);
+                    return -1;
+                } else if (write_result != (int)wlen) {
+                    fprintf(stderr, "Partial write: %d of %u bytes written\n", write_result, (unsigned int)wlen);
+                    return -1;
+                }
+
+                // Clear the pending write flag since we've sent the message
+                write_state->pending_write = 0;
+                fprintf(stdout, "Successfully sent %s message\n", write_state->write_is_binary ? "binary" : "text");
+
+                // Update connection state based on what was sent
+                if (write_state->current_state == WS_STATE_CONNECTED) {
+                    // This was the hello message
+                    change_websocket_state(write_state, WS_STATE_HELLO_SENT);
+                    write_state->hello_sent_time = time(NULL);
+                    fprintf(stdout, "Client hello sent at %ld\n", (long)write_state->hello_sent_time);
+                } else if (write_state->current_state == WS_STATE_LISTENING && !write_state->write_is_binary) {
+                    // This was the listen message (not a binary frame)
+                    fprintf(stdout, "Listen message sent successfully\n");
+                }
             }
             break;
         }
