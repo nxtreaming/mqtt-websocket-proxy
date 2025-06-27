@@ -60,6 +60,7 @@ typedef struct {
     int should_close;        // Flag to indicate connection should be closed
     int interactive_mode;    // Flag to indicate interactive mode is active
     int should_send_abort;   // Flag to indicate abort message should be sent
+    int should_send_ping;    // Flag to indicate WebSocket ping should be sent
 
     // Reconnection control
     int reconnection_enabled;     // Flag to enable/disable reconnection

@@ -446,7 +446,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     // This was the listen message (not a binary frame)
                     fprintf(stdout, "Listen message sent successfully\n");                    
                 }
-            } 
+            }
             else if (write_state->should_send_abort) {
                 const char *abort_msg = "{\"type\":\"abort\"}";
                 int result = send_ws_message(wsi, write_state, abort_msg, strlen(abort_msg), 0);
@@ -459,6 +459,17 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     fprintf(stderr, "Failed to send abort message\n");
                 }
                 write_state->should_send_abort = 0;
+            }
+            else if (write_state->should_send_ping) {
+                // Send WebSocket ping frame for keep-alive
+                unsigned char ping_payload[4] = {0x50, 0x49, 0x4E, 0x47}; // "PING"
+                int ping_result = lws_write(wsi, ping_payload, sizeof(ping_payload), LWS_WRITE_PING);
+                if (ping_result >= 0) {
+                    fprintf(stdout, "Sent WebSocket ping frame for keep-alive\n");
+                } else {
+                    fprintf(stderr, "Failed to send WebSocket ping frame\n");
+                }
+                write_state->should_send_ping = 0;
             }
             break;
         }
@@ -476,6 +487,15 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             }
             if (lws_add_http_header_by_name(wsi, (unsigned char *)"Client-Id", (unsigned char *)CLIENT_ID, strlen(CLIENT_ID), p, end)) {
                 return -1;
+            }
+            break;
+        }
+
+        case LWS_CALLBACK_CLIENT_RECEIVE_PONG: {
+            connection_state_t *pong_state = (connection_state_t *)lws_wsi_user(wsi);
+            if (pong_state) {
+                fprintf(stdout, "Received WebSocket pong frame - connection is alive\n");
+                pong_state->last_activity = time(NULL);
             }
             break;
         }
@@ -1160,12 +1180,12 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Keep-alive timeout: no activity for %ld seconds\n",
                             (long)(current_time - conn_state->last_activity));
 
-                    // Send a ping/status message to keep connection alive
-                    const char *ping_msg = "{\"type\":\"ping\"}";
-                    if (send_ws_message(g_wsi, conn_state, ping_msg, strlen(ping_msg), 0) == 0) {
-                        fprintf(stdout, "Sent keep-alive ping message\n");
-                        conn_state->last_activity = current_time;
-                    }
+                    // Use WebSocket standard ping frame instead of custom JSON message
+                    // Set flag to send ping in the next writable callback
+                    conn_state->should_send_ping = 1;
+                    lws_callback_on_writable(g_wsi);
+                    conn_state->last_activity = current_time;
+                    fprintf(stdout, "Requesting WebSocket ping for keep-alive\n");
                 }
             }
         }
