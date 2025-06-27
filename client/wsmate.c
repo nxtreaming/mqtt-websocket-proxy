@@ -93,6 +93,14 @@ static const char *g_hello_msg =
         "\"channels\":1,"
         "\"frame_duration\":40}}";
 
+static void ws_sleep(int milliseconds) {
+#ifdef _WIN32
+    Sleep(milliseconds);
+#else
+    usleep(milliseconds * 1000); // Convert milliseconds to microseconds
+#endif
+}
+
 static void close_websocket_connection(struct lws *wsi) {
     if (wsi) {
         // If this is the current active connection, clear the global reference
@@ -181,14 +189,9 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     // Attempt reconnection if enabled
                     if (should_attempt_reconnection(error_state)) {
                         int delay = calculate_reconnection_delay(error_state);
-                        fprintf(stdout, "Will attempt reconnection in %d milliseconds\n", delay);
 
-                        // Sleep for the calculated delay
-#ifdef _WIN32
-                        Sleep(delay);
-#else
-                        usleep(delay * 1000);
-#endif
+                        fprintf(stdout, "Will attempt reconnection in %d milliseconds\n", delay);
+                        ws_sleep(delay);
 
                         struct lws *new_wsi = attempt_reconnection(error_state);
                         if (new_wsi) {
@@ -366,14 +369,9 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 // Only attempt reconnection if not explicitly closing
                 if (closed_state->current_state != WS_STATE_CLOSING && should_attempt_reconnection(closed_state)) {
                     int delay = calculate_reconnection_delay(closed_state);
-                    fprintf(stdout, "Connection closed unexpectedly, will attempt reconnection in %d milliseconds\n", delay);
 
-                    // Sleep for the calculated delay
-#ifdef _WIN32
-                    Sleep(delay);
-#else
-                    usleep(delay * 1000);
-#endif
+                    fprintf(stdout, "Connection closed unexpectedly, will attempt reconnection in %d milliseconds\n", delay);
+                    ws_sleep(delay); 
 
                     struct lws *new_wsi = attempt_reconnection(closed_state);
                     if (new_wsi) {
@@ -752,13 +750,8 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
     // This tells the server we are starting to send audio data
     if (send_start_listening_message(wsi, conn_state) == 0) {
         change_websocket_state(conn_state, WS_STATE_LISTENING);
-        
         // Add a small delay to ensure the server processes the message
-#ifdef _WIN32
-        Sleep(100);
-#else
-        usleep(100000);
-#endif
+        ws_sleep(100); // 100 milliseconds
     } else {
         fprintf(stderr, "Failed to send start listening message\n");
     }
@@ -815,11 +808,7 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
         }
         
         // Delay based on detected frame duration
-#ifdef _WIN32
-        Sleep(frame_duration_ms);
-#else
-        usleep(frame_duration_ms * 1000);
-#endif
+        ws_sleep(frame_duration_ms);
     }
     
     fclose(file);
