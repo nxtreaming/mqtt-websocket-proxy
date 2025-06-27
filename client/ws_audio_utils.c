@@ -23,6 +23,11 @@ static ao_device *dev = NULL;
 static int audio_initialized = 0;
 static int driver = -1;
 
+// Audio playback control variables
+static volatile int audio_playing = 0;
+static volatile int audio_interrupted = 0;
+static volatile int should_stop_audio = 0;
+
 // Audio format tracking
 static long current_rate = 0;
 static int current_channels = 0;
@@ -415,7 +420,13 @@ int ws_audio_play_mp3(const void *data, size_t len) {
         fprintf(stderr, "[AUDIO] Audio system not initialized\n");
         return -1;
     }
-    
+
+    // Check if audio playback was interrupted or should stop
+    if (audio_interrupted || should_stop_audio) {
+        fprintf(stderr, "[AUDIO] Audio playback interrupted, skipping data\n");
+        return 0;
+    }
+
     // Make sure debug output is disabled during playback
     disable_mpg123_debug();
 
@@ -423,7 +434,10 @@ int ws_audio_play_mp3(const void *data, size_t len) {
         fprintf(stderr, "[AUDIO] Invalid audio data\n");
         return -1;
     }
-    
+
+    // Set audio playing flag
+    audio_playing = 1;
+
     fprintf(stderr, "[AUDIO] Processing MP3 data (%zu bytes)\n", len);
     
     // Ensure mpg123 handle is valid
@@ -523,9 +537,16 @@ int ws_audio_play_mp3(const void *data, size_t len) {
     // Decode and play loop
     int iterations = 0;
     do {
+        // Check for interrupt before processing
+        if (audio_interrupted || should_stop_audio) {
+            fprintf(stderr, "[AUDIO] Audio playback interrupted during decode loop\n");
+            audio_playing = 0;
+            return 0;
+        }
+
         // Read decoded data
         err = mpg123_read(mh, decode_buffer, AUDIO_BUFFER_SIZE, &done);
-        
+
         AUDIO_DEBUG("mpg123_read returned %d, decoded %zu bytes", err, done);
         
         // Handle format detection or changes
@@ -562,6 +583,13 @@ int ws_audio_play_mp3(const void *data, size_t len) {
         
         // Play decoded data if we have a valid device and data
         if (dev && done > 0 && format_initialized) {
+            // Check for interrupt before playing
+            if (audio_interrupted || should_stop_audio) {
+                fprintf(stderr, "[AUDIO] Audio playback interrupted before playing chunk\n");
+                audio_playing = 0;
+                return 0;
+            }
+
             AUDIO_DEBUG("Playing %zu bytes of audio", done);
             ao_play(dev, (char*)decode_buffer, done);
             bytes_decoded += done;
@@ -594,17 +622,22 @@ int ws_audio_play_mp3(const void *data, size_t len) {
     // Check for expected end conditions
     if (err == MPG123_DONE) {
         fprintf(stderr, "[AUDIO] Decoding completed successfully (%d bytes)\n", bytes_decoded);
+        audio_playing = 0;  // Reset playing flag when done
         return 0;
     } else if (err == MPG123_NEED_MORE) {
         // This is normal - we'll get more data in the next callback
         AUDIO_DEBUG("Decoder needs more data (%d bytes decoded so far)", bytes_decoded);
+        // Don't reset playing flag here as we expect more data
         return 0;
     } else if (err != MPG123_OK && bytes_decoded == 0) {
-        fprintf(stderr, "[AUDIO] Decoding error: %s (no bytes decoded)\n", 
+        fprintf(stderr, "[AUDIO] Decoding error: %s (no bytes decoded)\n",
                 mpg123_plain_strerror(err));
+        audio_playing = 0;  // Reset playing flag on error
         return -1;
     }
-    
+
+    // Reset playing flag if we reach here
+    audio_playing = 0;
     return 0; // Return success if we got here
 }
 
@@ -660,7 +693,67 @@ void ws_audio_cleanup(void) {
     }
     
     fprintf(stderr, "[AUDIO] Audio system cleaned up successfully\n");
-    
+
+    // Reset audio control flags
+    audio_playing = 0;
+    audio_interrupted = 0;
+    should_stop_audio = 0;
+
     // Restore original stderr
     restore_stderr();
+}
+
+int ws_audio_stop(void) {
+    fprintf(stderr, "[AUDIO] Stopping audio playback\n");
+
+    should_stop_audio = 1;
+    audio_interrupted = 1;
+
+    // Stop audio device immediately if available
+    if (dev && audio_initialized) {
+        // Play a small amount of silence to flush the buffer
+        unsigned char silence[1024] = {0};
+        ao_play(dev, (char*)silence, sizeof(silence));
+    }
+
+    audio_playing = 0;
+    return 0;
+}
+
+int ws_audio_is_playing(void) {
+    return audio_playing;
+}
+
+void ws_audio_interrupt(void) {
+    fprintf(stderr, "[AUDIO] Interrupting audio playback\n");
+    audio_interrupted = 1;
+    should_stop_audio = 1;
+}
+
+int ws_audio_clear_buffer(void) {
+    if (!mp3_buffer.initialized) {
+        return -1;
+    }
+
+    fprintf(stderr, "[AUDIO] Clearing audio buffer\n");
+
+    // Reset circular buffer
+    mp3_buffer.head = 0;
+    mp3_buffer.tail = 0;
+    mp3_buffer.size = 0;
+
+    // Reset mpg123 decoder state
+    if (mh) {
+        mpg123_close(mh);
+        if (initialize_mpg123_handle() != 0) {
+            fprintf(stderr, "[AUDIO] Failed to reinitialize mpg123 handle after buffer clear\n");
+            return -1;
+        }
+    }
+
+    // Reset audio control flags
+    audio_interrupted = 0;
+    should_stop_audio = 0;
+
+    return 0;
 }

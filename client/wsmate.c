@@ -281,6 +281,8 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     // Check if audio playback was interrupted
                     if (conn_state->audio_interrupted) {
                         fprintf(stdout, "Audio playback was interrupted, skipping frame\n");
+                        // Clear the audio buffer to prevent further playback
+                        ws_audio_clear_buffer();
                     } else {
                         // Play the received MP3 data
                         if (ws_audio_play_mp3(in, len) == 0) {
@@ -528,7 +530,8 @@ static void print_help(void) {
     fprintf(stdout, "  mcp <payload>       - Send MCP message with JSON-RPC payload\n");
     fprintf(stdout, "  status              - Show current connection status\n");
     fprintf(stdout, "  reconnect [enable|disable|status] - Configure reconnection policy\n");
-    fprintf(stdout, "  audio [timeout <sec>|stop|status] - Audio playback control\n");
+    fprintf(stdout, "  audio [timeout <sec>|stop|status] - Audio playback control and interrupt\n");
+    fprintf(stdout, "  interrupt           - Interrupt current audio playback immediately\n");
     fprintf(stdout, "  exit                - Close connection and exit\n");
     fprintf(stdout, "\n");
 }
@@ -609,7 +612,10 @@ static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const 
         conn_state->current_state == WS_STATE_SPEAKING) {
 
         // Interrupt any ongoing audio playback
-        if (conn_state->audio_playing) {
+        if (ws_audio_is_playing() || conn_state->audio_playing) {
+            ws_audio_interrupt();
+            ws_audio_stop();
+            ws_audio_clear_buffer();
             interrupt_audio_playback(conn_state);
             stop_audio_playback(conn_state);
         }
@@ -835,7 +841,12 @@ static void handle_audio(struct lws* wsi, connection_state_t* conn_state, const 
             fprintf(stdout, "Current audio timeout: %d seconds\n", conn_state->audio_timeout_seconds);
         }
     } else if (param && strcmp(param, "stop") == 0) {
-        if (conn_state->audio_playing) {
+        if (ws_audio_is_playing() || conn_state->audio_playing) {
+            // Stop audio playback immediately
+            ws_audio_stop();
+            ws_audio_clear_buffer();
+
+            // Update connection state
             interrupt_audio_playback(conn_state);
             stop_audio_playback(conn_state);
 
@@ -848,7 +859,8 @@ static void handle_audio(struct lws* wsi, connection_state_t* conn_state, const 
         }
     } else if (param && strcmp(param, "status") == 0) {
         fprintf(stdout, "Audio status:\n");
-        fprintf(stdout, "  Playing: %s\n", conn_state->audio_playing ? "yes" : "no");
+        fprintf(stdout, "  Playing (system): %s\n", ws_audio_is_playing() ? "yes" : "no");
+        fprintf(stdout, "  Playing (connection): %s\n", conn_state->audio_playing ? "yes" : "no");
         fprintf(stdout, "  Timeout: %d seconds\n", conn_state->audio_timeout_seconds);
         if (conn_state->audio_playing) {
             time_t elapsed = time(NULL) - conn_state->audio_start_time;
@@ -860,11 +872,36 @@ static void handle_audio(struct lws* wsi, connection_state_t* conn_state, const 
     }
 }
 
+static void handle_interrupt(struct lws* wsi, connection_state_t* conn_state, const char* command) {
+    if (ws_audio_is_playing() || conn_state->audio_playing) {
+        fprintf(stdout, "Interrupting current audio playback...\n");
+
+        // Stop audio playback immediately
+        ws_audio_interrupt();
+        ws_audio_stop();
+        ws_audio_clear_buffer();
+
+        // Update connection state
+        interrupt_audio_playback(conn_state);
+        stop_audio_playback(conn_state);
+
+        // Send abort message to stop server-side processing
+        conn_state->should_send_abort = 1;
+        lws_callback_on_writable(wsi);
+
+        fprintf(stdout, "Audio playback interrupted, ready for next recording\n");
+    } else {
+        fprintf(stdout, "No audio currently playing to interrupt\n");
+    }
+}
+
 static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     interrupted = 1;
     if (conn_state && wsi) {
         // Stop any ongoing audio playback
-        if (conn_state->audio_playing) {
+        if (ws_audio_is_playing() || conn_state->audio_playing) {
+            ws_audio_stop();
+            ws_audio_clear_buffer();
             stop_audio_playback(conn_state);
         }
         change_websocket_state(conn_state, WS_STATE_CLOSING);
@@ -885,6 +922,7 @@ static const command_entry_t command_table[] = {
     {"status",       handle_status,       1},
     {"reconnect",    handle_reconnect,    0},
     {"audio",        handle_audio,        1},
+    {"interrupt",    handle_interrupt,    1},
     {"exit",         handle_exit,         0}
 };
 
@@ -1102,6 +1140,12 @@ int main(int argc, char **argv) {
                 // Check audio playback timeout
                 if (is_audio_playback_timeout(conn_state)) {
                     fprintf(stderr, "Audio playback timeout detected, stopping playback\n");
+
+                    // Stop audio system immediately
+                    ws_audio_stop();
+                    ws_audio_clear_buffer();
+
+                    // Update connection state
                     stop_audio_playback(conn_state);
 
                     // Send abort message to stop current session

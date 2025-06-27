@@ -27,6 +27,30 @@ int ws_audio_play_mp3(const void *data, size_t len);
  */
 void ws_audio_cleanup(void);
 
+/**
+ * @brief Stop current audio playback immediately
+ * @return 0 on success, -1 on failure
+ */
+int ws_audio_stop(void);
+
+/**
+ * @brief Check if audio is currently playing
+ * @return 1 if playing, 0 if not playing
+ */
+int ws_audio_is_playing(void);
+
+/**
+ * @brief Set audio playback interrupt flag
+ * This will cause the audio playback to stop at the next opportunity
+ */
+void ws_audio_interrupt(void);
+
+/**
+ * @brief Clear all buffered audio data
+ * @return 0 on success, -1 on failure
+ */
+int ws_audio_clear_buffer(void);
+
 #ifdef __cplusplus
 }
 #endif
