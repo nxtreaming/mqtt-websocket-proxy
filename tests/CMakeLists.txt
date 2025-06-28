@@ -13,6 +13,7 @@ set(TEST_EXECUTABLES
     test_encryption
     test_audio_packet_format
     test_websocket_reconnection
+    test_websocket_message_protection
     test_complete_gateway
     integration_test
 )
@@ -158,6 +159,32 @@ target_include_directories(test_websocket_reconnection PRIVATE
 
 target_link_libraries(test_websocket_reconnection PRIVATE
     ${COMMON_TEST_LIBS}
+)
+
+# Test 5.5: WebSocket Message Protection Test
+add_executable(test_websocket_message_protection test_websocket_message_protection.cpp)
+
+target_include_directories(test_websocket_message_protection PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_SOURCE_DIR}/client
+)
+
+# This test needs to compile and link the client C code
+target_sources(test_websocket_message_protection PRIVATE
+    ${CMAKE_SOURCE_DIR}/client/ws_send_msg.c
+)
+
+# Add cJSON dependency - use the local cjson_static target
+target_include_directories(test_websocket_message_protection PRIVATE
+    ${CMAKE_SOURCE_DIR}/client/cjson
+)
+
+# Add dependencies
+target_link_libraries(test_websocket_message_protection PRIVATE
+    ${COMMON_TEST_LIBS}
+    websockets
+    cjson_static
 )
 
 # Test 6: Complete Gateway Test

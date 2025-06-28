@@ -97,7 +97,7 @@ static void ws_sleep(int milliseconds) {
 #ifdef _WIN32
     Sleep(milliseconds);
 #else
-    usleep(milliseconds * 1000); // Convert milliseconds to microseconds
+    usleep(milliseconds * 1000);
 #endif
 }
 
@@ -405,6 +405,7 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 } else {
                     fprintf(stderr, "Failed to send abort message\n");
                 }
+
                 write_state->should_send_abort = 0;
                 break; // Exit after handling abort
             }
@@ -796,7 +797,11 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
         }
         
         // Send the Opus frame via WebSocket binary message
-        if (send_ws_message(wsi, conn_state, (const char*)opus_buffer, frame_length, 1) != 0) {
+        int send_result = send_ws_message(wsi, conn_state, (const char*)opus_buffer, frame_length, 1);
+        if (send_result == -2) {
+            fprintf(stderr, "Warning: Opus frame dropped due to pending write, skipping frame\n");
+            // Continue to next frame instead of breaking
+        } else if (send_result != 0) {
             fprintf(stderr, "Failed to send Opus frame\n");
             break;
         }

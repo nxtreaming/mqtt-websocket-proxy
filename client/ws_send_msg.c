@@ -24,6 +24,49 @@ static cJSON* create_base_message(connection_state_t* conn_state, const char* ty
     return root;
 }
 
+// Internal function to send text messages immediately
+static int send_text_message_immediate(struct lws* wsi, connection_state_t* conn_state,
+                                     const char* message, size_t message_len) {
+    // Allocate temporary buffer with LWS_PRE space
+    size_t buffer_size = LWS_PRE + message_len + 1; // +1 for null terminator
+    unsigned char* temp_buffer = malloc(buffer_size);
+    if (!temp_buffer) {
+        fprintf(stderr, "Error: Failed to allocate temporary buffer for immediate text send\n");
+        return -1;
+    }
+
+    // Copy message to buffer with LWS_PRE offset
+    memcpy(temp_buffer + LWS_PRE, message, message_len);
+    temp_buffer[LWS_PRE + message_len] = '\0'; // Null terminate for safety
+
+    // Log the message we're about to send
+    char preview[41] = {0};
+    size_t copy_len = message_len < 37 ? message_len : 37;
+    strncpy(preview, message, copy_len);
+    if (message_len > 37) {
+        strcpy(preview + copy_len, "...");
+    }
+    fprintf(stdout, "Sending WebSocket text frame immediately (%u bytes): %s\n",
+            (unsigned int)message_len, preview);
+
+    // Send immediately using lws_write
+    int write_result = lws_write(wsi, temp_buffer + LWS_PRE, message_len, LWS_WRITE_TEXT);
+
+    // Clean up temporary buffer
+    free(temp_buffer);
+
+    if (write_result < 0) {
+        fprintf(stderr, "Error %d writing text message to WebSocket\n", write_result);
+        return -1;
+    } else if (write_result != (int)message_len) {
+        fprintf(stderr, "Partial text write: %d of %zu bytes written\n", write_result, message_len);
+        return -1;
+    }
+
+    fprintf(stdout, "Text message sent immediately (%zu bytes)\n", message_len);
+    return 0;
+}
+
 static int send_json_object(struct lws* wsi, connection_state_t* conn_state, cJSON* root) {
     if (!wsi || !conn_state || !root) {
         fprintf(stderr, "Error: Invalid parameters for send_json_object\n");
@@ -38,6 +81,7 @@ static int send_json_object(struct lws* wsi, connection_state_t* conn_state, cJS
         return -1;
     }
 
+    // Text messages (JSON) are now sent immediately, no need to handle -2
     int result = send_ws_message(wsi, conn_state, json_str, strlen(json_str), 0);
 
     free(json_str);
@@ -46,40 +90,37 @@ static int send_json_object(struct lws* wsi, connection_state_t* conn_state, cJS
     return result;
 }
 
-int send_ws_message(struct lws* wsi, connection_state_t* conn_state, 
+int send_ws_message(struct lws* wsi, connection_state_t* conn_state,
                    const char* message, size_t message_len, int is_binary) {
     if (!wsi || !conn_state || !message) {
         fprintf(stderr, "Error: Invalid parameters for send_ws_message\n");
         return -1;
     }
-    
+
     if (message_len > sizeof(conn_state->write_buf) - LWS_PRE) {
         fprintf(stderr, "Error: Message too large (%zu bytes) for send buffer\n", message_len);
         return -1;
     }
-    
-    memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
-    if (!is_binary && message_len < sizeof(conn_state->write_buf) - LWS_PRE - 1) {
-        conn_state->write_buf[LWS_PRE + message_len] = '\0';
+
+    // For text messages (JSON control commands), try to send immediately
+    if (!is_binary) {
+        return send_text_message_immediate(wsi, conn_state, message, message_len);
     }
 
+    // For binary messages (audio data), use buffered approach to prevent corruption
+    // Check if there's already a pending write to prevent message corruption
+    if (conn_state->pending_write) {
+        fprintf(stderr, "Warning: Previous binary message still pending, dropping new message to prevent corruption\n");
+        return -2; // Return different error code to indicate message dropped
+    }
+
+    memcpy(conn_state->write_buf + LWS_PRE, message, message_len);
     conn_state->write_len = message_len;
     conn_state->write_is_binary = is_binary;
     conn_state->pending_write = 1;
 
-    // Only log binary frames if they're large or log text frames with condensed content
-    if (!is_binary) {
-        // For text frames, show condensed version (first 37 chars + "..." if needed)
-        char preview[41] = {0};
-        size_t copy_len = message_len < 37 ? message_len : 37;
-        strncpy(preview, (const char*)(conn_state->write_buf + LWS_PRE), copy_len);
-        if (message_len > 37) {
-            strcpy(preview + copy_len, "...");
-        }
-        fprintf(stdout, "Sending WebSocket text frame (%u bytes): %s\n",
-            (unsigned int)message_len, preview);
-    }
-    else if (message_len > 1024) {
+    // Log binary frames if they're large (text frames are logged in send_text_message_immediate)
+    if (message_len > 1024) {
         // Only log binary frames if they're large
         fprintf(stdout, "Sending WebSocket binary frame (%u bytes)\n", (unsigned int)message_len);
     }

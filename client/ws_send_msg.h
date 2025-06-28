@@ -10,6 +10,11 @@
 
 //#define WS_ENABLE_DEBUG
 
+#ifdef W800_PLATFORM
+#   define malloc tls_mem_alloc
+#   define free   tls_mem_free
+#endif
+
 // Audio parameters structure
 typedef struct {
     char format[32];           // Audio format (e.g., "opus")
@@ -96,13 +101,16 @@ extern struct lws_context* g_context;
 
 /**
  * Send a WebSocket message (text or binary)
- * 
+ *
+ * Text messages (JSON control commands) are sent immediately for better responsiveness.
+ * Binary messages (audio data) use buffered approach to prevent corruption.
+ *
  * @param wsi WebSocket instance
  * @param conn_state Connection state
  * @param message Message content
  * @param message_len Message length
  * @param is_binary 1 for binary message, 0 for text message
- * @return 0 on success, -1 on failure
+ * @return 0 on success, -1 on failure, -2 if binary message dropped due to pending write
  */
 int send_ws_message(struct lws* wsi, connection_state_t* conn_state, const char* message, size_t message_len, int is_binary);
 
