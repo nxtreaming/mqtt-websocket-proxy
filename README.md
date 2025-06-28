@@ -128,6 +128,17 @@ mqtt-websocket-proxy/
 │       ├── types.h            # Type definitions
 │       ├── constants.h        # Constant definitions
 │       └── error_codes.h      # Error code definitions
+├── client/                   # WebSocket client implementation
+│   ├── ws_send_msg.c             # WebSocket message sending with protection
+│   ├── ws_send_msg.h             # WebSocket message API definitions
+│   ├── ws_parse_msg.c            # WebSocket message parsing
+│   ├── ws_parse_msg.h            # WebSocket message parsing definitions
+│   ├── ws_audio_utils.c          # Audio utilities and processing
+│   ├── ws_audio_utils.h          # Audio utilities definitions
+│   ├── wsmate.c                  # WebSocket client main implementation
+│   └── cjson/                    # Local cJSON library
+│       ├── cJSON.c               # cJSON implementation
+│       └── cJSON.h               # cJSON header
 ├── tests/                     # Test suite
 │   ├── test_basic.cpp                # Basic functionality tests
 │   ├── test_mqtt_protocol.cpp        # MQTT protocol tests
@@ -140,6 +151,7 @@ mqtt-websocket-proxy/
 │   ├── test_encryption.cpp           # Encryption tests
 │   ├── test_audio_packet_format.cpp  # Audio packet format tests
 │   ├── test_websocket_reconnection.cpp # WebSocket reconnection tests
+│   ├── test_websocket_message_protection.cpp # WebSocket message protection tests
 │   ├── integration_test.cpp          # Integration tests for all components
 │   └── test_complete_gateway.cpp     # End-to-end gateway tests
 ├── third_party/              # Third-party libraries
