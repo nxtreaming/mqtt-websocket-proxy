@@ -198,7 +198,8 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
                         struct lws *new_wsi = attempt_reconnection(error_state);
                         if (new_wsi) {
-                            g_wsi = new_wsi;
+                            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
+                            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
                             break; // Don't set interrupted flag if reconnection was attempted
                         }
                     }
@@ -383,7 +384,8 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
                     struct lws *new_wsi = attempt_reconnection(closed_state);
                     if (new_wsi) {
-                        g_wsi = new_wsi;
+                        // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
+                        fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
                         break; // Don't set interrupted flag if reconnection was attempted
                     }
                 }
