@@ -60,6 +60,18 @@ struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
 static int interrupted = 0;
 
+// Reconnection thread management
+static int reconnection_requested = 0;
+static connection_state_t *g_reconnection_state = NULL;
+
+#ifdef _WIN32
+static HANDLE reconnection_thread_handle = NULL;
+static CRITICAL_SECTION reconnection_mutex;
+#else
+static pthread_t reconnection_thread_id = 0;
+static pthread_mutex_t reconnection_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 // Forward declaration of callback function
 static int callback_wsmate(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len);
 
@@ -99,6 +111,53 @@ static void ws_sleep(int milliseconds) {
 #else
     usleep(milliseconds * 1000);
 #endif
+}
+
+// Thread-safe functions for reconnection management
+static void request_reconnection(connection_state_t *conn_state) {
+    if (!conn_state) return;
+
+#ifdef _WIN32
+    EnterCriticalSection(&reconnection_mutex);
+#else
+    pthread_mutex_lock(&reconnection_mutex);
+#endif
+
+    g_reconnection_state = conn_state;
+    reconnection_requested = 1;
+
+#ifdef _WIN32
+    LeaveCriticalSection(&reconnection_mutex);
+#else
+    pthread_mutex_unlock(&reconnection_mutex);
+#endif
+
+    fprintf(stdout, "Reconnection requested\n");
+}
+
+static int check_reconnection_request(connection_state_t **conn_state) {
+    int requested = 0;
+
+#ifdef _WIN32
+    EnterCriticalSection(&reconnection_mutex);
+#else
+    pthread_mutex_lock(&reconnection_mutex);
+#endif
+
+    if (reconnection_requested) {
+        requested = 1;
+        *conn_state = g_reconnection_state;
+        reconnection_requested = 0;
+        g_reconnection_state = NULL;
+    }
+
+#ifdef _WIN32
+    LeaveCriticalSection(&reconnection_mutex);
+#else
+    pthread_mutex_unlock(&reconnection_mutex);
+#endif
+
+    return requested;
 }
 
 static void close_websocket_connection(struct lws *wsi) {
@@ -159,6 +218,55 @@ static struct lws* attempt_reconnection(connection_state_t *conn_state) {
     return new_wsi;
 }
 
+// Reconnection worker thread function
+#ifdef _WIN32
+static DWORD WINAPI reconnection_thread_func(LPVOID arg)
+#else
+static void *reconnection_thread_func(void *arg)
+#endif
+{
+    fprintf(stdout, "Reconnection worker thread started\n");
+
+    while (!interrupted) {
+        connection_state_t *conn_state = NULL;
+
+        // Check if reconnection is requested
+        if (check_reconnection_request(&conn_state)) {
+            if (conn_state && should_attempt_reconnection(conn_state)) {
+                // Calculate delay before attempting reconnection
+                int delay = calculate_reconnection_delay(conn_state);
+                fprintf(stdout, "Reconnection worker: waiting %d milliseconds before attempt\n", delay);
+                ws_sleep(delay);
+
+                // Check if we're still supposed to reconnect (not interrupted)
+                if (!interrupted) {
+                    fprintf(stdout, "Reconnection worker: attempting reconnection\n");
+                    struct lws *new_wsi = attempt_reconnection(conn_state);
+                    if (new_wsi) {
+                        fprintf(stdout, "Reconnection worker: reconnection attempt initiated\n");
+                    } else {
+                        fprintf(stderr, "Reconnection worker: reconnection attempt failed\n");
+                        // If reconnection failed and we haven't exceeded max attempts,
+                        // request another reconnection attempt
+                        if (should_attempt_reconnection(conn_state)) {
+                            request_reconnection(conn_state);
+                        } else {
+                            fprintf(stderr, "Reconnection worker: maximum attempts reached or reconnection disabled\n");
+                            interrupted = 1; // Signal main thread to exit
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sleep for a short time to avoid busy waiting
+        ws_sleep(100);
+    }
+
+    fprintf(stdout, "Reconnection worker thread exiting\n");
+    return 0;
+}
+
 static void handle_stt_wrapper(struct lws *wsi, cJSON *json) {
     handle_generic_message(wsi, json, "STT");
 }
@@ -179,33 +287,29 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
     switch (reason) {
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
             fprintf(stderr, "CLIENT_CONNECTION_ERROR: %s\n", in ? (char *)in : "(null)");
-            // Close the connection and update state
+            // Handle connection error and update state
             if (g_wsi) {
                 connection_state_t *error_state = (connection_state_t *)lws_wsi_user(g_wsi);
                 if (error_state) {
                     change_websocket_state(error_state, WS_STATE_ERROR);
                     error_state->connection_lost = 1;
 
-                    // Close the old connection first to prevent resource leak
-                    close_websocket_connection(g_wsi);
+                    // Clear global reference and update state (connection failed to establish)
+                    if (wsi == g_wsi) {
+                        g_wsi = NULL;
+                    }
 
-                    // Attempt reconnection if enabled
+                    // Request reconnection from worker thread instead of doing it here
                     if (should_attempt_reconnection(error_state)) {
-                        int delay = calculate_reconnection_delay(error_state);
-
-                        fprintf(stdout, "Will attempt reconnection in %d milliseconds\n", delay);
-                        ws_sleep(delay);
-
-                        struct lws *new_wsi = attempt_reconnection(error_state);
-                        if (new_wsi) {
-                            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                            break; // Don't set interrupted flag if reconnection was attempted
-                        }
+                        request_reconnection(error_state);
+                        fprintf(stdout, "Reconnection requested from worker thread\n");
+                        break; // Don't set interrupted flag if reconnection was requested
                     }
                 } else {
-                    // If no connection state, still close the connection
-                    close_websocket_connection(g_wsi);
+                    // If no connection state, still clear the global reference
+                    if (wsi == g_wsi) {
+                        g_wsi = NULL;
+                    }
                 }
             }
             interrupted = 1;
@@ -372,26 +476,23 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             if (closed_state) {
                 closed_state->connection_lost = 1;
 
-                // Close the old connection first to prevent resource leak
-                close_websocket_connection(wsi);
+                // Update connection state and clear global reference (connection is already closed)
+                if (wsi == g_wsi) {
+                    g_wsi = NULL;
+                }
+                change_websocket_state(closed_state, WS_STATE_DISCONNECTED);
 
-                // Only attempt reconnection if not explicitly closing
+                // Only request reconnection if not explicitly closing
                 if (closed_state->current_state != WS_STATE_CLOSING && should_attempt_reconnection(closed_state)) {
-                    int delay = calculate_reconnection_delay(closed_state);
-
-                    fprintf(stdout, "Connection closed unexpectedly, will attempt reconnection in %d milliseconds\n", delay);
-                    ws_sleep(delay);
-
-                    struct lws *new_wsi = attempt_reconnection(closed_state);
-                    if (new_wsi) {
-                        // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                        fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                        break; // Don't set interrupted flag if reconnection was attempted
-                    }
+                    request_reconnection(closed_state);
+                    fprintf(stdout, "Connection closed unexpectedly, reconnection requested from worker thread\n");
+                    break; // Don't set interrupted flag if reconnection was requested
                 }
             } else {
-                // If no connection state, still close the connection
-                close_websocket_connection(wsi);
+                // If no connection state, still clear the global reference
+                if (wsi == g_wsi) {
+                    g_wsi = NULL;
+                }
             }
 
             interrupted = 1;
@@ -1081,15 +1182,18 @@ int main(int argc, char **argv) {
     // Set console to UTF-8 for both input and output to handle Chinese characters correctly
     SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
+
+    // Initialize critical section for reconnection thread synchronization
+    InitializeCriticalSection(&reconnection_mutex);
 #endif
     // Initialize random number generator with current time
     srand((unsigned int)time(NULL));
-       
+
     fprintf(stdout, "Interactive WebSocket Client\n");
     fprintf(stdout, "==========================\n");
     fprintf(stdout, "Connecting to %s:%d%s\n", SERVER_ADDRESS, SERVER_PORT, SERVER_PATH);
     fprintf(stdout, "Type 'help' for available commands\n\n");
-        
+
     // Register signal handler for SIGINT (Ctrl+C)
     signal(SIGINT, sigint_handler);
     struct lws_context_creation_info info;
@@ -1142,6 +1246,15 @@ int main(int argc, char **argv) {
         lws_context_destroy(g_context);
         return 1;
     }
+
+    // Start reconnection worker thread
+    reconnection_thread_handle = CreateThread(NULL, 0, reconnection_thread_func, NULL, 0, NULL);
+    if (!reconnection_thread_handle) {
+        fprintf(stderr, "Error creating reconnection thread\n");
+        CloseHandle(service_thread_handle);
+        lws_context_destroy(g_context);
+        return 1;
+    }
 #else
     pthread_t serice_thread_id;
     if (pthread_create(&service_thread_id, NULL, service_thread_func, (void *)g_context) != 0) {
@@ -1150,6 +1263,14 @@ int main(int argc, char **argv) {
         return 1;
     }
     pthread_detach(service_thread_id);
+
+    // Start reconnection worker thread
+    if (pthread_create(&reconnection_thread_id, NULL, reconnection_thread_func, NULL) != 0) {
+        fprintf(stderr, "Error creating reconnection thread\n");
+        lws_context_destroy(g_context);
+        return 1;
+    }
+    pthread_detach(reconnection_thread_id);
 #endif
 
     while (!interrupted) {
@@ -1240,6 +1361,21 @@ int main(int argc, char **argv) {
         }
         service_thread_handle = NULL;
     }
+
+    // Wait for reconnection thread to exit
+    if (reconnection_thread_handle) {
+        lwsl_user("Waiting for reconnection thread to join (Windows)...\n");
+        DWORD wait_result = WaitForSingleObject(reconnection_thread_handle, 5000); // 5 second timeout
+        if (wait_result == WAIT_TIMEOUT) {
+            lwsl_err("Reconnection thread did not exit within timeout, terminating...\n");
+            TerminateThread(reconnection_thread_handle, 1);
+        }
+        CloseHandle(reconnection_thread_handle);
+        reconnection_thread_handle = NULL;
+    }
+
+    // Cleanup critical section
+    DeleteCriticalSection(&reconnection_mutex);
 #else
     if (service_thread_id) {
         lwsl_user("Waiting for service thread to join (POSIX)...\n");
@@ -1247,6 +1383,15 @@ int main(int argc, char **argv) {
         pthread_join(service_thread_id, &res);
         service_thread_id = 0;
         lwsl_user("Service thread joined (POSIX).\n");
+    }
+
+    // Wait for reconnection thread to exit (if not detached)
+    if (reconnection_thread_id) {
+        lwsl_user("Waiting for reconnection thread to join (POSIX)...\n");
+        void* res;
+        pthread_join(reconnection_thread_id, &res);
+        reconnection_thread_id = 0;
+        lwsl_user("Reconnection thread joined (POSIX).\n");
     }
 #endif
 
