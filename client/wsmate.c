@@ -186,6 +186,9 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     change_websocket_state(error_state, WS_STATE_ERROR);
                     error_state->connection_lost = 1;
 
+                    // Close the old connection first to prevent resource leak
+                    close_websocket_connection(g_wsi);
+
                     // Attempt reconnection if enabled
                     if (should_attempt_reconnection(error_state)) {
                         int delay = calculate_reconnection_delay(error_state);
@@ -199,8 +202,10 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                             break; // Don't set interrupted flag if reconnection was attempted
                         }
                     }
+                } else {
+                    // If no connection state, still close the connection
+                    close_websocket_connection(g_wsi);
                 }
-                close_websocket_connection(g_wsi);
             }
             interrupted = 1;
             break;
@@ -366,12 +371,15 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             if (closed_state) {
                 closed_state->connection_lost = 1;
 
+                // Close the old connection first to prevent resource leak
+                close_websocket_connection(wsi);
+
                 // Only attempt reconnection if not explicitly closing
                 if (closed_state->current_state != WS_STATE_CLOSING && should_attempt_reconnection(closed_state)) {
                     int delay = calculate_reconnection_delay(closed_state);
 
                     fprintf(stdout, "Connection closed unexpectedly, will attempt reconnection in %d milliseconds\n", delay);
-                    ws_sleep(delay); 
+                    ws_sleep(delay);
 
                     struct lws *new_wsi = attempt_reconnection(closed_state);
                     if (new_wsi) {
@@ -379,9 +387,11 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                         break; // Don't set interrupted flag if reconnection was attempted
                     }
                 }
+            } else {
+                // If no connection state, still close the connection
+                close_websocket_connection(wsi);
             }
 
-            close_websocket_connection(wsi);
             interrupted = 1;
             break;
         }
@@ -1063,8 +1073,6 @@ static void *service_thread_func(void *arg)
     lwsl_user("WebSocket service thread exiting.\n");
     return 0;
 }
-
-
 
 int main(int argc, char **argv) {
 #ifdef _WIN32
