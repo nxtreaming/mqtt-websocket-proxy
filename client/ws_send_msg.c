@@ -365,32 +365,37 @@ int is_valid_state_transition(websocket_state_t from_state, websocket_state_t to
                     to_state == WS_STATE_DISCONNECTED);
             
         case WS_STATE_CONNECTED:
-            return (to_state == WS_STATE_HELLO_SENT || 
-                    to_state == WS_STATE_ERROR || 
-                    to_state == WS_STATE_CLOSING);
+            return (to_state == WS_STATE_HELLO_SENT ||
+                    to_state == WS_STATE_ERROR ||
+                    to_state == WS_STATE_CLOSING ||
+                    to_state == WS_STATE_DISCONNECTED);
             
         case WS_STATE_HELLO_SENT:
-            return (to_state == WS_STATE_AUTHENTICATED || 
-                    to_state == WS_STATE_ERROR || 
-                    to_state == WS_STATE_CLOSING);
-            
+            return (to_state == WS_STATE_AUTHENTICATED ||
+                    to_state == WS_STATE_ERROR ||
+                    to_state == WS_STATE_CLOSING ||
+                    to_state == WS_STATE_DISCONNECTED);
+
         case WS_STATE_AUTHENTICATED:
-            return (to_state == WS_STATE_LISTENING || 
+            return (to_state == WS_STATE_LISTENING ||
                     to_state == WS_STATE_SPEAKING ||
-                    to_state == WS_STATE_ERROR || 
-                    to_state == WS_STATE_CLOSING);
-            
+                    to_state == WS_STATE_ERROR ||
+                    to_state == WS_STATE_CLOSING ||
+                    to_state == WS_STATE_DISCONNECTED);
+
         case WS_STATE_LISTENING:
-            return (to_state == WS_STATE_SPEAKING || 
+            return (to_state == WS_STATE_SPEAKING ||
                     to_state == WS_STATE_AUTHENTICATED ||
-                    to_state == WS_STATE_ERROR || 
-                    to_state == WS_STATE_CLOSING);
-            
+                    to_state == WS_STATE_ERROR ||
+                    to_state == WS_STATE_CLOSING ||
+                    to_state == WS_STATE_DISCONNECTED);
+
         case WS_STATE_SPEAKING:
-            return (to_state == WS_STATE_LISTENING || 
+            return (to_state == WS_STATE_LISTENING ||
                     to_state == WS_STATE_AUTHENTICATED ||
-                    to_state == WS_STATE_ERROR || 
-                    to_state == WS_STATE_CLOSING);
+                    to_state == WS_STATE_ERROR ||
+                    to_state == WS_STATE_CLOSING ||
+                    to_state == WS_STATE_DISCONNECTED);
             
         case WS_STATE_ERROR:
             return (to_state == WS_STATE_CLOSING || 
