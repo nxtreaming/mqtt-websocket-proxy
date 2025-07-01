@@ -1169,7 +1169,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 #else
-    pthread_t serice_thread_id;
+    pthread_t service_thread_id;
     if (pthread_create(&service_thread_id, NULL, service_thread_func, (void *)g_context) != 0) {
         fprintf(stderr, "Error creating service thread\n");
         lws_context_destroy(g_context);
