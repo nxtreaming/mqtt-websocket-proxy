@@ -1236,12 +1236,10 @@ int main(int argc, char **argv) {
     // Signal the service thread to stop and wait for it
     if (g_context) {
         lwsl_user("Shutting down WebSocket service...\n");
-        
-        // Clear any active WebSocket connection reference
-        if (g_wsi) {
-            g_wsi = NULL;  // Clear reference, libwebsockets will handle cleanup
-        }
-        
+
+        // Note: g_wsi will be managed by libwebsockets callbacks
+        // No need to manually clear it here to avoid race conditions
+
         // Wake up lws_service in the other thread
         lws_cancel_service(g_context);
         
