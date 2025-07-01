@@ -39,6 +39,9 @@
 #define DEVICE_ID "b8:f8:62:fc:eb:68"
 #define CLIENT_ID "79667E80-D837-4E95-B6DF-31C5E3C6DF22"
 
+// Reconnection delay chunk size (milliseconds)
+#define RECONNECTION_CHUNK_DELAY 100
+
 typedef void (*command_handler_func)(struct lws* wsi, connection_state_t* conn_state, const char* command);
 // Command table entry structure
 typedef struct {
@@ -99,6 +102,37 @@ static void ws_sleep(int milliseconds) {
 #else
     usleep(milliseconds * 1000);
 #endif
+}
+
+// Interruptible sleep with progress indication for reconnection delays
+static int ws_sleep_interruptible(int total_delay_ms, const char* operation) {
+    int chunk_delay = RECONNECTION_CHUNK_DELAY;
+    int chunks_total = (total_delay_ms + chunk_delay - 1) / chunk_delay; // Round up
+    int chunk_count = 0;
+
+    fprintf(stdout, "%s: waiting %d ms", operation, total_delay_ms);
+    fflush(stdout);
+
+    for (int elapsed = 0; elapsed < total_delay_ms && !interrupted; elapsed += chunk_delay) {
+        int current_chunk = (elapsed + chunk_delay > total_delay_ms) ?
+                          (total_delay_ms - elapsed) : chunk_delay;
+        ws_sleep(current_chunk);
+
+        chunk_count++;
+        // Show progress every 10 chunks (1 second) or at the end
+        if (chunk_count % 10 == 0 || elapsed + current_chunk >= total_delay_ms) {
+            fprintf(stdout, ".");
+            fflush(stdout);
+        }
+    }
+
+    if (interrupted) {
+        fprintf(stdout, " interrupted!\n");
+        return -1; // Interrupted
+    } else {
+        fprintf(stdout, " done\n");
+        return 0; // Completed
+    }
 }
 
 static void close_websocket_connection(struct lws *wsi) {
@@ -186,26 +220,32 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     change_websocket_state(error_state, WS_STATE_ERROR);
                     error_state->connection_lost = 1;
 
-                    // Close the old connection first to prevent resource leak
-                    close_websocket_connection(g_wsi);
+                    // Clear global wsi reference since connection is invalid
+                    if (g_wsi == wsi) {
+                        g_wsi = NULL;
+                    }
 
                     // Attempt reconnection if enabled
                     if (should_attempt_reconnection(error_state)) {
                         int delay = calculate_reconnection_delay(error_state);
 
-                        fprintf(stdout, "Will attempt reconnection in %d milliseconds\n", delay);
-                        ws_sleep(delay);
-
-                        struct lws *new_wsi = attempt_reconnection(error_state);
-                        if (new_wsi) {
-                            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                            break; // Don't set interrupted flag if reconnection was attempted
+                        // Use interruptible sleep with progress indication
+                        if (ws_sleep_interruptible(delay, "Reconnection delay") == 0) {
+                            struct lws *new_wsi = attempt_reconnection(error_state);
+                            if (new_wsi) {
+                                // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
+                                fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
+                                break; // Don't set interrupted flag if reconnection was attempted
+                            }
+                        } else {
+                            fprintf(stdout, "Reconnection cancelled due to interruption\n");
                         }
                     }
                 } else {
-                    // If no connection state, still close the connection
-                    close_websocket_connection(g_wsi);
+                    // If no connection state, still clear global reference
+                    if (g_wsi == wsi) {
+                        g_wsi = NULL;
+                    }
                 }
             }
             interrupted = 1;
@@ -371,27 +411,35 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t *closed_state = (connection_state_t *)lws_wsi_user(wsi);
             if (closed_state) {
                 closed_state->connection_lost = 1;
+                change_websocket_state(closed_state, WS_STATE_DISCONNECTED);
 
-                // Close the old connection first to prevent resource leak
-                close_websocket_connection(wsi);
+                // Clear global wsi reference since connection is closed
+                if (g_wsi == wsi) {
+                    g_wsi = NULL;
+                }
 
                 // Only attempt reconnection if not explicitly closing
                 if (closed_state->current_state != WS_STATE_CLOSING && should_attempt_reconnection(closed_state)) {
                     int delay = calculate_reconnection_delay(closed_state);
 
-                    fprintf(stdout, "Connection closed unexpectedly, will attempt reconnection in %d milliseconds\n", delay);
-                    ws_sleep(delay);
-
-                    struct lws *new_wsi = attempt_reconnection(closed_state);
-                    if (new_wsi) {
-                        // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                        fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                        break; // Don't set interrupted flag if reconnection was attempted
+                    fprintf(stdout, "Connection closed unexpectedly\n");
+                    // Use interruptible sleep with progress indication
+                    if (ws_sleep_interruptible(delay, "Reconnection delay") == 0) {
+                        struct lws *new_wsi = attempt_reconnection(closed_state);
+                        if (new_wsi) {
+                            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
+                            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
+                            break; // Don't set interrupted flag if reconnection was attempted
+                        }
+                    } else {
+                        fprintf(stdout, "Reconnection cancelled due to interruption\n");
                     }
                 }
             } else {
-                // If no connection state, still close the connection
-                close_websocket_connection(wsi);
+                // If no connection state, still clear global reference
+                if (g_wsi == wsi) {
+                    g_wsi = NULL;
+                }
             }
 
             interrupted = 1;
