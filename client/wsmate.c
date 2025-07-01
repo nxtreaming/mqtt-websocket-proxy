@@ -135,24 +135,6 @@ static int ws_sleep_interruptible(int total_delay_ms, const char* operation) {
     }
 }
 
-static void close_websocket_connection(struct lws *wsi) {
-    if (wsi) {
-        // If this is the current active connection, clear the global reference
-        if (wsi == g_wsi) {
-            g_wsi = NULL;
-        }
-        
-        // Update connection state if possible
-        connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
-        if (conn_state) {
-            change_websocket_state(conn_state, WS_STATE_DISCONNECTED);
-        }
-        
-        // Close the connection
-        lws_close_reason(wsi, LWS_CLOSE_STATUS_GOING_AWAY, (unsigned char *)"Closing connection", 16);
-    }
-}
-
 static void sigint_handler(int sig) {
     (void)sig;
     fprintf(stdout, "\nCaught SIGINT/Ctrl+C, initiating shutdown...\n");
@@ -262,7 +244,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t *conn_state = (connection_state_t *)lws_wsi_user(wsi);
             if (!conn_state) {
                 fprintf(stderr, "Error: No connection state available\n");
-                close_websocket_connection(wsi);
                 return -1;
             }
 
@@ -281,7 +262,6 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             } else {
                 fprintf(stderr, "Error: Failed to prepare hello message\n");
                 change_websocket_state(conn_state, WS_STATE_ERROR);
-                close_websocket_connection(wsi);
                 return -1;
             }
 
@@ -292,16 +272,14 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             connection_state_t* conn_state = (connection_state_t*)lws_wsi_user(wsi);
             if (!conn_state) {
                 fprintf(stderr, "Error: No connection state in RECEIVE\n");
-                close_websocket_connection(wsi);
                 return -1;
             }
 
             // Check if we're still connected
             if (conn_state->current_state == WS_STATE_DISCONNECTED ||
                 conn_state->current_state == WS_STATE_ERROR) {
-                fprintf(stderr, "Error: Received data in invalid state: %s\n", 
+                fprintf(stderr, "Error: Received data in invalid state: %s\n",
                        websocket_state_to_string(conn_state->current_state));
-                close_websocket_connection(wsi);
                 return -1;
             }
 
@@ -1259,10 +1237,9 @@ int main(int argc, char **argv) {
     if (g_context) {
         lwsl_user("Shutting down WebSocket service...\n");
         
-        // Close any active WebSocket connection
+        // Clear any active WebSocket connection reference
         if (g_wsi) {
-            close_websocket_connection(g_wsi);
-            g_wsi = NULL;  // Ensure we don't double-free
+            g_wsi = NULL;  // Clear reference, libwebsockets will handle cleanup
         }
         
         // Wake up lws_service in the other thread
