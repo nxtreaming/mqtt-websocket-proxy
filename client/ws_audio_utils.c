@@ -321,11 +321,11 @@ static size_t circular_buffer_peek(circular_buffer_t *cb, unsigned char *dest, s
 
 int ws_audio_init(size_t buffer_size) {
     if (audio_initialized) {
-        fprintf(stderr, "[AUDIO] Audio system already initialized\n");
+        fprintf(stdout, "[AUDIO] Audio system already initialized\n");
         return 0;  // Already initialized
     }
 
-    fprintf(stderr, "[AUDIO] Initializing audio system...\n");
+    fprintf(stdout, "[AUDIO] Initializing audio system...\n");
     
     // Redirect stderr to null device to suppress mpg123 debug output
     disable_mpg123_debug();
@@ -350,17 +350,17 @@ int ws_audio_init(size_t buffer_size) {
     #ifdef _WIN32
     driver = ao_driver_id("directsound");
     if (driver >= 0) {
-        fprintf(stderr, "[AUDIO] Using DirectSound driver\n");
+        fprintf(stdout, "[AUDIO] Using DirectSound driver\n");
     } else {
-        fprintf(stderr, "[AUDIO] DirectSound not available, using default driver\n");
+        fprintf(stdout, "[AUDIO] DirectSound not available, using default driver\n");
         driver = ao_default_driver_id();
     }
     #else
     driver = ao_default_driver_id();
     #endif
-    
+
     if (driver < 0) {
-        fprintf(stderr, "[AUDIO] Failed to initialize audio output\n");
+        fprintf(stdout, "[AUDIO] Failed to initialize audio output\n");
         mpg123_exit();
         return -1;
     }
@@ -411,7 +411,7 @@ int ws_audio_init(size_t buffer_size) {
     }
 
     audio_initialized = 1;
-    fprintf(stderr, "[AUDIO] Audio system initialized successfully\n");
+    fprintf(stdout, "[AUDIO] Audio system initialized successfully\n");
     return 0;
 }
 
@@ -438,7 +438,12 @@ int ws_audio_play_mp3(const void *data, size_t len) {
     // Set audio playing flag
     audio_playing = 1;
 
-    fprintf(stderr, "[AUDIO] Processing MP3 data (%zu bytes)\n", len);
+    // Only log every 20th call to reduce output noise
+    static int process_count = 0;
+    process_count++;
+    if (process_count % 20 == 1) {
+        fprintf(stdout, "[AUDIO] Processing MP3 data stream... (call #%d, %zu bytes)\n", process_count, len);
+    }
     
     // Ensure mpg123 handle is valid
     if (!mh && initialize_mpg123_handle() != 0) {
@@ -621,7 +626,10 @@ int ws_audio_play_mp3(const void *data, size_t len) {
     
     // Check for expected end conditions
     if (err == MPG123_DONE) {
-        fprintf(stderr, "[AUDIO] Decoding completed successfully (%d bytes)\n", bytes_decoded);
+        // Only log completion for significant amounts of data to reduce noise
+        if (bytes_decoded > 10240) {  // Only log if more than 10KB decoded
+            fprintf(stdout, "[AUDIO] Decoding completed successfully (%d bytes)\n", bytes_decoded);
+        }
         audio_playing = 0;  // Reset playing flag when done
         return 0;
     } else if (err == MPG123_NEED_MORE) {
@@ -642,7 +650,7 @@ int ws_audio_play_mp3(const void *data, size_t len) {
 }
 
 void ws_audio_cleanup(void) {
-    fprintf(stderr, "[AUDIO] Cleaning up audio system...\n");
+    fprintf(stdout, "[AUDIO] Cleaning up audio system...\n");
     
     // First flush any pending audio with silence
     if (dev && audio_initialized) {
@@ -692,7 +700,7 @@ void ws_audio_cleanup(void) {
         current_encoding = 0;
     }
     
-    fprintf(stderr, "[AUDIO] Audio system cleaned up successfully\n");
+    fprintf(stdout, "[AUDIO] Audio system cleaned up successfully\n");
 
     // Reset audio control flags
     audio_playing = 0;
@@ -704,7 +712,7 @@ void ws_audio_cleanup(void) {
 }
 
 int ws_audio_stop(void) {
-    fprintf(stderr, "[AUDIO] Stopping audio playback\n");
+    fprintf(stdout, "[AUDIO] Stopping audio playback\n");
 
     should_stop_audio = 1;
     audio_interrupted = 1;
@@ -725,7 +733,7 @@ int ws_audio_is_playing(void) {
 }
 
 void ws_audio_interrupt(void) {
-    fprintf(stderr, "[AUDIO] Interrupting audio playback\n");
+    fprintf(stdout, "[AUDIO] Interrupting audio playback\n");
     audio_interrupted = 1;
     should_stop_audio = 1;
 }
@@ -735,7 +743,7 @@ int ws_audio_clear_buffer(void) {
         return -1;
     }
 
-    fprintf(stderr, "[AUDIO] Clearing audio buffer\n");
+    fprintf(stdout, "[AUDIO] Clearing audio buffer\n");
 
     // Reset circular buffer
     mp3_buffer.head = 0;

@@ -285,7 +285,13 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
             if (lws_frame_is_binary(wsi)) {
                 // Handle binary data (audio frames)
-                fprintf(stdout, "Received BINARY audio frame: %zu bytes\n", len);
+                // Only log every 10th frame to reduce output noise
+                static int frame_count = 0;
+                frame_count++;
+
+                if (frame_count % 10 == 1) {
+                    fprintf(stdout, "Receiving audio frames... (frame #%d, %zu bytes)\n", frame_count, len);
+                }
 
                  // Try to play the received audio data as MP3
                 if (len > 0) {
@@ -307,16 +313,15 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
 
                     // Check if audio playback was interrupted
                     if (conn_state->audio_interrupted) {
-                        fprintf(stdout, "Audio playback was interrupted, skipping frame\n");
+                        fprintf(stdout, "Audio playback was interrupted, skipping frames\n");
                         // Clear the audio buffer to prevent further playback
                         ws_audio_clear_buffer();
                     } else {
-                        // Play the received MP3 data
-                        if (ws_audio_play_mp3(in, len) == 0) {
-                            fprintf(stdout, "Playing received MP3 audio (%zu bytes)\n", len);
-                        } else {
-                            fprintf(stderr, "Failed to play received MP3 audio\n");
+                        // Play the received MP3 data (remove success logging to reduce noise)
+                        if (ws_audio_play_mp3(in, len) != 0) {
+                            fprintf(stderr, "Failed to play received MP3 audio (frame #%d)\n", frame_count);
                         }
+                        // Success case: no logging to reduce output noise
                     }
                 }
 
