@@ -63,8 +63,9 @@ struct lws_context *g_context = NULL;
 static struct lws *g_wsi = NULL;
 static int interrupted = 0;
 
-// Forward declaration of callback function
+// Forward declarations
 static int callback_wsmate(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len);
+static struct lws* attempt_reconnection(connection_state_t *conn_state);
 
 // Protocol definition
 static struct lws_protocols protocols[] = {
@@ -135,6 +136,50 @@ static int ws_sleep_interruptible(int total_delay_ms, const char* operation) {
     }
 }
 
+static void stop_and_cleanup_audio(connection_state_t* conn_state) {
+    if (!conn_state) return;
+
+    if (ws_audio_is_playing() || conn_state->audio_playing) {
+        ws_audio_interrupt();
+        ws_audio_stop();
+        ws_audio_clear_buffer();
+        interrupt_audio_playback(conn_state);
+        stop_audio_playback(conn_state);
+    }
+}
+
+static void clear_global_wsi_reference(struct lws* wsi) {
+    if (g_wsi == wsi) {
+        g_wsi = NULL;
+    }
+}
+
+static int handle_reconnection_attempt(connection_state_t* conn_state, const char* context_msg) {
+    if (!conn_state || !should_attempt_reconnection(conn_state)) {
+        return 0; // No reconnection attempted
+    }
+
+    int delay = calculate_reconnection_delay(conn_state);
+
+    if (context_msg) {
+        fprintf(stdout, "%s\n", context_msg);
+    }
+
+    // Use interruptible sleep with progress indication
+    if (ws_sleep_interruptible(delay, "Reconnection delay") == 0) {
+        struct lws *new_wsi = attempt_reconnection(conn_state);
+        if (new_wsi) {
+            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
+            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
+            return 1; // Reconnection attempted successfully
+        }
+    } else {
+        fprintf(stdout, "Reconnection cancelled due to interruption\n");
+    }
+
+    return 0; // Reconnection failed or cancelled
+}
+
 static void sigint_handler(int sig) {
     (void)sig;
     fprintf(stdout, "\nCaught SIGINT/Ctrl+C, initiating shutdown...\n");
@@ -203,31 +248,15 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                     error_state->connection_lost = 1;
 
                     // Clear global wsi reference since connection is invalid
-                    if (g_wsi == wsi) {
-                        g_wsi = NULL;
-                    }
+                    clear_global_wsi_reference(wsi);
 
                     // Attempt reconnection if enabled
-                    if (should_attempt_reconnection(error_state)) {
-                        int delay = calculate_reconnection_delay(error_state);
-
-                        // Use interruptible sleep with progress indication
-                        if (ws_sleep_interruptible(delay, "Reconnection delay") == 0) {
-                            struct lws *new_wsi = attempt_reconnection(error_state);
-                            if (new_wsi) {
-                                // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                                fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                                break; // Don't set interrupted flag if reconnection was attempted
-                            }
-                        } else {
-                            fprintf(stdout, "Reconnection cancelled due to interruption\n");
-                        }
+                    if (handle_reconnection_attempt(error_state, NULL)) {
+                        break; // Don't set interrupted flag if reconnection was attempted
                     }
                 } else {
                     // If no connection state, still clear global reference
-                    if (g_wsi == wsi) {
-                        g_wsi = NULL;
-                    }
+                    clear_global_wsi_reference(wsi);
                 }
             }
             interrupted = 1;
@@ -397,32 +426,17 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
                 change_websocket_state(closed_state, WS_STATE_DISCONNECTED);
 
                 // Clear global wsi reference since connection is closed
-                if (g_wsi == wsi) {
-                    g_wsi = NULL;
-                }
+                clear_global_wsi_reference(wsi);
 
                 // Only attempt reconnection if not explicitly closing
-                if (closed_state->current_state != WS_STATE_CLOSING && should_attempt_reconnection(closed_state)) {
-                    int delay = calculate_reconnection_delay(closed_state);
-
-                    fprintf(stdout, "Connection closed unexpectedly\n");
-                    // Use interruptible sleep with progress indication
-                    if (ws_sleep_interruptible(delay, "Reconnection delay") == 0) {
-                        struct lws *new_wsi = attempt_reconnection(closed_state);
-                        if (new_wsi) {
-                            // Don't set g_wsi here - it will be set in LWS_CALLBACK_CLIENT_ESTABLISHED
-                            fprintf(stdout, "Reconnection attempt initiated, waiting for establishment\n");
-                            break; // Don't set interrupted flag if reconnection was attempted
-                        }
-                    } else {
-                        fprintf(stdout, "Reconnection cancelled due to interruption\n");
+                if (closed_state->current_state != WS_STATE_CLOSING) {
+                    if (handle_reconnection_attempt(closed_state, "Connection closed unexpectedly")) {
+                        break; // Don't set interrupted flag if reconnection was attempted
                     }
                 }
             } else {
                 // If no connection state, still clear global reference
-                if (g_wsi == wsi) {
-                    g_wsi = NULL;
-                }
+                clear_global_wsi_reference(wsi);
             }
 
             interrupted = 1;
@@ -591,6 +605,29 @@ static const char* extract_command_param(const char* command, const char* cmd_na
     return start;
 }
 
+static const char* validate_and_extract_text_param(struct lws* wsi, connection_state_t* conn_state,
+                                                   const char* command, const char* cmd_name,
+                                                   websocket_state_t required_state1,
+                                                   websocket_state_t required_state2,
+                                                   websocket_state_t required_state3) {
+    const char* text = extract_command_param(command, cmd_name);
+    if (!text || !*text) {
+        fprintf(stderr, "Please provide text for %s command\n", cmd_name);
+        return NULL;
+    }
+
+    // Check if current state is one of the allowed states
+    if (conn_state->current_state != required_state1 &&
+        conn_state->current_state != required_state2 &&
+        conn_state->current_state != required_state3) {
+        fprintf(stderr, "Cannot send %s message in current state: %s\n",
+               cmd_name, websocket_state_to_string(conn_state->current_state));
+        return NULL;
+    }
+
+    return text;
+}
+
 static void print_help(void) {
     fprintf(stdout, "\nAvailable commands:\n");
     fprintf(stdout, "  help                 - Show this help message\n");
@@ -651,34 +688,20 @@ static void handle_listen(struct lws* wsi, connection_state_t* conn_state, const
 }
 
 static void handle_detect(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    const char* text = extract_command_param(command, "detect");
-    if (text && *text) {
-        if (conn_state->current_state == WS_STATE_LISTENING) {
-            send_detect_message(wsi, conn_state, text);
-            change_websocket_state(conn_state, WS_STATE_SPEAKING);
-        } else {
-            fprintf(stderr, "Cannot send detect message in current state: %s\n", 
-                   websocket_state_to_string(conn_state->current_state));
-        }
-    } else {
-        fprintf(stderr, "Please provide text to detect\n");
+    const char* text = validate_and_extract_text_param(wsi, conn_state, command, "detect",
+                                                       WS_STATE_LISTENING, WS_STATE_LISTENING, WS_STATE_LISTENING);
+    if (text) {
+        send_detect_message(wsi, conn_state, text);
+        change_websocket_state(conn_state, WS_STATE_SPEAKING);
     }
 }
 
 static void handle_chat(struct lws* wsi, connection_state_t* conn_state, const char* command) {
-    const char* text = extract_command_param(command, "chat");
-    if (text && *text) {
-        if (conn_state->current_state == WS_STATE_AUTHENTICATED || 
-            conn_state->current_state == WS_STATE_LISTENING ||
-            conn_state->current_state == WS_STATE_SPEAKING) {
-            send_chat_message(wsi, conn_state, text);
-            // Chat doesn't change the primary state, but we could add a sub-state if needed
-        } else {
-            fprintf(stderr, "Cannot send chat message in current state: %s\n", 
-                   websocket_state_to_string(conn_state->current_state));
-        }
-    } else {
-        fprintf(stderr, "Please provide a message to send\n");
+    const char* text = validate_and_extract_text_param(wsi, conn_state, command, "chat",
+                                                       WS_STATE_AUTHENTICATED, WS_STATE_LISTENING, WS_STATE_SPEAKING);
+    if (text) {
+        send_chat_message(wsi, conn_state, text);
+        // Chat doesn't change the primary state, but we could add a sub-state if needed
     }
 }
 
@@ -687,13 +710,7 @@ static void handle_abort(struct lws* wsi, connection_state_t* conn_state, const 
         conn_state->current_state == WS_STATE_SPEAKING) {
 
         // Interrupt any ongoing audio playback
-        if (ws_audio_is_playing() || conn_state->audio_playing) {
-            ws_audio_interrupt();
-            ws_audio_stop();
-            ws_audio_clear_buffer();
-            interrupt_audio_playback(conn_state);
-            stop_audio_playback(conn_state);
-        }
+        stop_and_cleanup_audio(conn_state);
 
         conn_state->should_send_abort = 1;
         lws_callback_on_writable(wsi);
@@ -913,12 +930,7 @@ static void handle_audio(struct lws* wsi, connection_state_t* conn_state, const 
     } else if (param && strcmp(param, "stop") == 0) {
         if (ws_audio_is_playing() || conn_state->audio_playing) {
             // Stop audio playback immediately
-            ws_audio_stop();
-            ws_audio_clear_buffer();
-
-            // Update connection state
-            interrupt_audio_playback(conn_state);
-            stop_audio_playback(conn_state);
+            stop_and_cleanup_audio(conn_state);
 
             // Send abort message to stop server-side processing
             conn_state->should_send_abort = 1;
@@ -947,13 +959,7 @@ static void handle_interrupt(struct lws* wsi, connection_state_t* conn_state, co
         fprintf(stdout, "Interrupting current audio playback...\n");
 
         // Stop audio playback immediately
-        ws_audio_interrupt();
-        ws_audio_stop();
-        ws_audio_clear_buffer();
-
-        // Update connection state
-        interrupt_audio_playback(conn_state);
-        stop_audio_playback(conn_state);
+        stop_and_cleanup_audio(conn_state);
 
         // Send abort message to stop server-side processing
         conn_state->should_send_abort = 1;
@@ -969,11 +975,7 @@ static void handle_exit(struct lws* wsi, connection_state_t* conn_state, const c
     interrupted = 1;
     if (conn_state && wsi) {
         // Stop any ongoing audio playback
-        if (ws_audio_is_playing() || conn_state->audio_playing) {
-            ws_audio_stop();
-            ws_audio_clear_buffer();
-            stop_audio_playback(conn_state);
-        }
+        stop_and_cleanup_audio(conn_state);
         change_websocket_state(conn_state, WS_STATE_CLOSING);
         lws_close_reason(wsi, LWS_CLOSE_STATUS_NORMAL, (unsigned char*)"User exit", 9);
     }
@@ -1210,11 +1212,7 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Audio playback timeout detected, stopping playback\n");
 
                     // Stop audio system immediately
-                    ws_audio_stop();
-                    ws_audio_clear_buffer();
-
-                    // Update connection state
-                    stop_audio_playback(conn_state);
+                    stop_and_cleanup_audio(conn_state);
 
                     // Send abort message to stop current session
                     conn_state->should_send_abort = 1;
