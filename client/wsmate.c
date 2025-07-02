@@ -456,8 +456,14 @@ static int callback_wsmate( struct lws *wsi, enum lws_callback_reasons reason, v
             // Handle ping frame with high priority
             if (write_state->should_send_ping) {
                 // Send WebSocket ping frame for keep-alive
-                unsigned char ping_payload[4] = {0x50, 0x49, 0x4E, 0x47}; // "PING"
-                int ping_result = lws_write(wsi, ping_payload, sizeof(ping_payload), LWS_WRITE_PING);
+                // Must reserve LWS_PRE bytes before the actual payload
+                unsigned char ping_buffer[LWS_PRE + 4];
+                unsigned char *ping_payload = &ping_buffer[LWS_PRE];
+                ping_payload[0] = 0x50; // 'P'
+                ping_payload[1] = 0x49; // 'I'
+                ping_payload[2] = 0x4E; // 'N'
+                ping_payload[3] = 0x47; // 'G'
+                int ping_result = lws_write(wsi, ping_payload, 4, LWS_WRITE_PING);
                 if (ping_result >= 0) {
                     fprintf(stdout, "Sent WebSocket ping frame for keep-alive\n");
                 } else {
