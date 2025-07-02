@@ -311,7 +311,7 @@ void init_connection_state(connection_state_t *conn_state) {
     conn_state->max_reconnection_attempts = 5;  // Default: 5 attempts
     conn_state->initial_reconnection_delay = 1000;  // Default: 1 second
     conn_state->max_reconnection_delay = 30000;  // Default: 30 seconds
-    conn_state->backoff_multiplier = 2.0;  // Default: exponential backoff
+    conn_state->backoff_multiplier = 1.5;  // Default: exponential backoff
     conn_state->reconnection_delay = conn_state->initial_reconnection_delay;
 
     // Initialize audio playback settings

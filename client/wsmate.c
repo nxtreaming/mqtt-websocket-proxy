@@ -28,7 +28,7 @@
 #define LWS_CLOSE_STATUS_GOING_AWAY 1001
 #endif
 
-#define MAX_PAYLOAD_SIZE 1024
+#define MAX_PAYLOAD_SIZE 2048
 
 // Hardcoded for now, replace with dynamic values or config
 #define SERVER_ADDRESS "122.51.57.185"
@@ -878,7 +878,7 @@ static void handle_opus(struct lws* wsi, connection_state_t* conn_state, const c
 static void handle_reconnect(struct lws* wsi, connection_state_t* conn_state, const char* command) {
     const char* param = extract_command_param(command, "reconnect");
     if (param && strcmp(param, "enable") == 0) {
-        set_reconnection_policy(conn_state, 1, 5, 1000, 30000, 2.0);
+        set_reconnection_policy(conn_state, 1, 5, 1000, 30000, 1.5);
         fprintf(stdout, "Reconnection enabled with default settings\n");
     } else if (param && strcmp(param, "disable") == 0) {
         set_reconnection_policy(conn_state, 0, 0, 0, 0, 1.0);
